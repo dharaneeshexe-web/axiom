@@ -1,0 +1,249 @@
+╔══════════════════════════════════════════════════════════════════════════════════╗
+║                    RAZORPAY AI BUILDATHON - TRACK 1                            ║
+║              CONVERSATIONAL CHECKOUT AGENT (What We're Building)                ║
+╚══════════════════════════════════════════════════════════════════════════════════╝
+
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                              USER INTERFACE                                     │
+│                                                                                 │
+│   User: "Buy me 2kg apples from FreshCart"                                      │
+│   User: "Which one do you want? A (₹50), B (₹65), C (₹80)"                    │
+│   User: "Take payment from UPI"                                                 │
+│                                                                                 │
+└──────────────────────────────────┬──────────────────────────────────────────────┘
+                                   │
+                                   ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                           FASTAPI BACKEND                                        │
+│                                                                                 │
+│   POST /chat         → Process user message                                     │
+│   GET  /status/{id}  → Check transaction status                                 │
+│   POST /webhook      → Razorpay webhook receiver                                │
+│                                                                                 │
+└──────────────────────────────────┬──────────────────────────────────────────────┘
+                                   │
+                                   ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                          LANGGRAPH AGENT                                         │
+│                                                                                 │
+│   ┌─────────────┐      ┌─────────────┐      ┌─────────────┐                    │
+│   │   PARSER    │─────▶│   DECIDER   │─────▶│  EXECUTOR   │                    │
+│   │             │      │             │      │             │                    │
+│   │ • Intent    │      │ • Choose    │      │ • Create    │                    │
+│   │ • Item      │      │   action    │      │   order     │                    │
+│   │ • Quantity  │      │ • Confirm   │      │ • Execute   │                    │
+│   │ • Merchant  │      │   with user │      │   payment   │                    │
+│   └─────────────┘      └─────────────┘      └─────────────┘                    │
+│          │                    │                    │                            │
+│          │                    ▼                    │                            │
+│          │           ┌─────────────┐              │                            │
+│          │           │ CONFIRMER   │              │                            │
+│          │           │             │              │                            │
+│          │           │ "Buy A for  │              │                            │
+│          │           │  ₹50?"      │              │                            │
+│          │           │ User: Yes   │              │                            │
+│          │           └─────────────┘              │                            │
+│          │                                        │                            │
+│          └────────────────────────────────────────┘                            │
+│                                                                                 │
+│   ┌─────────────────────────────────────────────────────────────────────┐      │
+│   │                        STATE GRAPH                                   │      │
+│   │                                                                      │      │
+│   │   [Start] ──▶ [Parse Intent] ──▶ [Query Catalog] ──▶ [Present]     │      │
+│   │                     │                    │                │          │      │
+│   │                     │                    │                ▼          │      │
+│   │                     │                    │           [User Confirm]  │      │
+│   │                     │                    │                │          │      │
+│   │                     │                    │                ▼          │      │
+│   │                     │                    │          [Create Order]   │      │
+│   │                     │                    │                │          │      │
+│   │                     │                    │                ▼          │      │
+│   │                     │                    │         [Execute Payment] │      │
+│   │                     │                    │                │          │      │
+│   │                     │                    │                ▼          │      │
+│   │                     │                    │          [END/ERROR]      │      │
+│   │                     │                    │                           │      │
+│   │   Failure paths: ◀──┴────────────────────┘                           │      │
+│   │   • Card declined → Retry with UPI                                    │      │
+│   │   • Insufficient funds → Notify user                                  │      │
+│   │   • Timeout → Cancel order                                            │      │
+│   │   • Invalid VPA → Ask re-entry                                        │      │
+│   └─────────────────────────────────────────────────────────────────────┘      │
+│                                                                                 │
+│   State: {user_msg, parsed_intent, catalog, selected_item, order, payment}     │
+│                                                                                 │
+└────────┬──────────────────────────┬──────────────────────────┬─────────────────┘
+         │                          │                          │
+         ▼                          ▼                          ▼
+┌─────────────────┐    ┌─────────────────────┐    ┌─────────────────────┐
+│  GROQ LLM       │    │   RAZORPAY API      │    │     LAMINAR         │
+│                 │    │   (Test Mode)       │    │     (Tracing)       │
+│  Llama 3.3 70B  │    │                     │    │                     │
+│                 │    │  ┌───────────────┐  │    │  ┌───────────────┐  │
+│  • Parse intent │    │  │    ORDERS     │  │    │  │    TRACES     │  │
+│  • Decide action│    │  │  Create order │  │    │  │  Every step   │  │
+│  • Generate     │    │  │  with amount  │  │    │  │  logged with  │  │
+│  • response     │    │  └───────────────┘  │    │  │  reasoning    │  │
+│                 │    │                     │    │  └───────────────┘  │
+│  ~600ms latency │    │  ┌───────────────┐  │    │                     │
+│  ~$0.001/call   │    │  │   PAYMENTS    │  │    │  ┌───────────────┐  │
+│                 │    │  │  Create pay   │  │    │  │  TRANSCRIPT   │  │
+│                 │    │  │  Capture pay  │  │    │  │  View as      │  │
+│                 │    │  │  Refund pay   │  │    │  │  conversation │  │
+│                 │    │  └───────────────┘  │    │  └───────────────┘  │
+│                 │    │                     │    │                     │
+│                 │    │  ┌───────────────┐  │    │  ┌───────────────┐  │
+│                 │    │  │  CUSTOMERS    │  │    │  │    SIGNALS    │  │
+│                 │    │  │  Create test  │  │    │  │  "Transaction │  │
+│                 │    │  │  customer     │  │    │  │   completed"  │  │
+│                 │    │  └───────────────┘  │    │  └───────────────┘  │
+│                 │    │                     │    │                     │
+└─────────────────┘    └──────────┬──────────┘    └─────────────────────┘
+                                  │
+                                  ▼
+                    ┌─────────────────────────┐
+                    │    MERCHANT CATALOG      │
+                    │    (Mock Data)           │
+                    │                          │
+                    │  FreshCart:              │
+                    │  • Apples - ₹50/kg       │
+                    │  • Bananas - ₹30/kg      │
+                    │  • Oranges - ₹65/kg      │
+                    │                          │
+                    └─────────────────────────┘
+
+
+╔══════════════════════════════════════════════════════════════════════════════════╗
+║                           DATA FLOW (SINGLE TRANSACTION)                         ║
+╚══════════════════════════════════════════════════════════════════════════════════╝
+
+  ┌──────┐      ┌──────┐      ┌──────┐      ┌──────┐      ┌──────┐      ┌──────┐
+  │ USER │      │PARSE │      │QUERY │      │ORDER │      │PAY   │      │DONE  │
+  │      │─────▶│INTENT│─────▶│CATALOG──────▶│      │─────▶│      │─────▶│      │
+  │      │      │      │      │      │      │      │      │      │      │      │
+  └──────┘      └──────┘      └──────┘      └──────┘      └──────┘      └──────┘
+      │             │             │             │             │             │
+      │             │             │             │             │             │
+      ▼             ▼             ▼             ▼             ▼             ▼
+  ┌──────┐      ┌──────┐      ┌──────┐      ┌──────┐      ┌──────┐      ┌──────┐
+  │LAMINAR      │LAMINAR      │LAMINAR      │LAMINAR      │LAMINAR      │LAMINAR
+  │TRACE │      │TRACE │      │TRACE │      │TRACE │      │TRACE │      │TRACE │
+  │START │      │PARSE │      │QUERY │      │ORDER │      │PAY   │      │END   │
+  └──────┘      └──────┘      └──────┘      └──────┘      └──────┘      └──────┘
+
+
+╔══════════════════════════════════════════════════════════════════════════════════╗
+║                           FAILURE SCENARIOS                                      ║
+╚══════════════════════════════════════════════════════════════════════════════════╝
+
+  HAPPY PATH:
+  ════════════
+  User ──▶ Parse ──▶ Catalog ──▶ Confirm ──▶ Order ──▶ Payment ──▶ Success ✓
+
+
+  FAILURE 1: CARD DECLINED
+  ══════════════════════════
+  User ──▶ Parse ──▶ Catalog ──▶ Confirm ──▶ Order ──▶ Payment ──▶ ✗ CARD DECLINED
+                                                                │
+                                                     ┌──────────┴──────────┐
+                                                     │  Retry with UPI    │
+                                                     │  success@razorpay  │
+                                                     └──────────┬──────────┘
+                                                                │
+                                                                ▼
+                                                              ✓ SUCCESS
+
+
+  FAILURE 2: INSUFFICIENT FUNDS
+  ══════════════════════════════
+  User ──▶ Parse ──▶ Catalog ──▶ Confirm ──▶ Order ──▶ Payment ──▶ ✗ INSUFFICIENT
+                                                                │
+                                                     ┌──────────┴──────────┐
+                                                     │  Notify user:      │
+                                                     │  "Insufficient     │
+                                                     │   funds. Try       │
+                                                     │   another method?" │
+                                                     └──────────┬──────────┘
+                                                                │
+                                                                ▼
+                                                          User notified
+
+
+  FAILURE 3: TIMEOUT
+  ═══════════════════
+  User ──▶ Parse ──▶ Catalog ──▶ Confirm ──▶ Order ──▶ Payment ──▶ ✗ TIMEOUT (30s)
+                                                                │
+                                                     ┌──────────┴──────────┐
+                                                     │  Cancel order      │
+                                                     │  Notify user:      │
+                                                     │  "Payment timed    │
+                                                     │   out. Order       │
+                                                     │   cancelled."      │
+                                                     └──────────┬──────────┘
+                                                                │
+                                                                ▼
+                                                          Order cancelled
+
+
+  FAILURE 4: INVALID VPA
+  ═══════════════════════
+  User ──▶ Parse ──▶ Catalog ──▶ Confirm ──▶ Order ──▶ Payment ──▶ ✗ INVALID VPA
+                                                                │
+                                                     ┌──────────┴──────────┐
+                                                     │  Ask user:         │
+                                                     │  "Invalid UPI ID.  │
+                                                     │   Please re-enter  │
+                                                     │   your VPA."       │
+                                                     └──────────┬──────────┘
+                                                                │
+                                                                ▼
+                                                     User re-enters VPA
+                                                                │
+                                                                ▼
+                                                              ✓ SUCCESS
+
+
+╔══════════════════════════════════════════════════════════════════════════════════╗
+║                           PROTOCOL AWARENESS                                    ║
+╚══════════════════════════════════════════════════════════════════════════════════╝
+
+  TODAY (What You Build On):
+  ┌─────────────────────────────────────────────────────────────────┐
+  │  Razorpay Test Mode ──▶ Direct API calls ──▶ Money moves      │
+  └─────────────────────────────────────────────────────────────────┘
+
+  TOMORROW (What's Coming):
+  ┌─────────────────────────────────────────────────────────────────┐
+  │  NPCI UAP ──▶ Agent payments on UPI (23B txns/month)          │
+  │  AP2       ──▶ Signed mandates for agent authorization        │
+  │  x402      ──▶ Machine-to-machine micropayments               │
+  └─────────────────────────────────────────────────────────────────┘
+
+  YOUR PITCH:
+  ┌─────────────────────────────────────────────────────────────────┐
+  │  "Built on Razorpay today, protocol-aware for tomorrow."       │
+  └─────────────────────────────────────────────────────────────────┘
+
+
+╔══════════════════════════════════════════════════════════════════════════════════╗
+║                           DEPLOYMENT                                             ║
+╚══════════════════════════════════════════════════════════════════════════════════╝
+
+  ┌─────────────────────────────────────────────────────────────────┐
+  │                    RAILWAY (Free Tier)                          │
+  │                                                                 │
+  │  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐        │
+  │  │   Docker    │───▶│   FastAPI   │───▶│  LangGraph  │        │
+  │  │  Container  │    │   Backend   │    │   Agent     │        │
+  │  └─────────────┘    └─────────────┘    └─────────────┘        │
+  │                           │                   │                │
+  │                           ▼                   ▼                │
+  │                    ┌─────────────┐    ┌─────────────┐        │
+  │                    │  PostgreSQL │    │   Laminar   │        │
+  │                    │  (Supabase) │    │   (Cloud)   │        │
+  │                    └─────────────┘    └─────────────┘        │
+  └─────────────────────────────────────────────────────────────────┘
+
+
+╔══════════════════════════════════════════════════════════════════════════════════╗
+║                           FINAL SUMMARY                                          ║

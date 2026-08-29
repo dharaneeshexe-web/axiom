@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Grok-Checkout — Agentic Commerce Console</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="shell">
+
+    <!-- Header -->
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark">◈</span>
+        <span class="brand-name">Grok<span class="brand-accent">Checkout</span></span>
+        <span class="brand-sub">Agentic Commerce Console</span>
+      </div>
+      <div class="topmeta">
+        <span class="live-dot"></span>
+        <span class="live-label">Live · Razorpay Test Mode</span>
+      </div>
+    </header>
+
+    <!-- Quick scenario launchers -->
+    <section class="quickrow">
+      <button class="q-chip" data-scenario="iphone" type="button">
+        <span class="q-title">iPhone 16</span>
+        <span class="q-sub">Show color options → pick</span>
+      </button>
+      <button class="q-chip" data-scenario="bandage" type="button">
+        <span class="q-title">Crepe Bandage</span>
+        <span class="q-sub">Medical essentials</span>
+      </button>
+      <button class="q-chip" data-scenario="cake" type="button">
+        <span class="q-title">Ice Cream Cake</span>
+        <span class="q-sub">Birthday order</span>
+      </button>
+      <button class="q-chip q-chip-ghost" data-scenario="failure" type="button">
+        <span class="q-title">Failure Recovery</span>
+        <span class="q-sub">Card declined → UPI</span>
+      </button>
+    </section>
+
+    <!-- Main grid -->
+    <main class="grid">
+
+      <!-- Column 1: Conversation -->
+      <section class="panel chat-panel">
+        <div class="panel-head">
+          <div>
+            <h2>Conversation</h2>
+            <p class="panel-sub">Multi-turn checkout session</p>
+          </div>
+          <span class="stage-pill" id="stagePill">—</span>
+        </div>
+
+        <div class="chat-log" id="chatLog"></div>
+
+        <div class="chat-input-row">
+          <button id="micBtn" class="mic-btn" type="button" title="Talk to the agent (browser voice)">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/>
+            </svg>
+          </button>
+          <input id="chatInput" type="text" placeholder="e.g. Place an order for iPhone 16, show me options" />
+          <button id="voiceBtn" class="voice-btn" type="button" title="Toggle agent spoken replies">VOICE OFF</button>
+          <button id="sendBtn" class="send-btn" type="button">Send</button>
+        </div>
+      </section>
+
+      <!-- Column 2: Agent transcript / decisions -->
+      <section class="panel transcript-panel">
+        <div class="panel-head">
+          <div>
+            <h2>Agent Decision Trace</h2>
+            <p class="panel-sub">Live Laminar spans</p>
+          </div>
+          <a class="ext-link" id="laminarLink" href="#" target="_blank" rel="noopener">Open in Laminar ↗</a>
+        </div>
+        <div class="trace-log" id="traceLog">
+          <div class="empty-state">
+            <div class="empty-orbit"></div>
+            <p>No trace yet.</p>
+            <p class="empty-sub">Send a message to watch the agent think.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Column 3: Payment + catalog -->
+      <section class="panel right-panel">
+        <div class="panel-head">
+          <div>
+            <h2>Order &amp; Catalog</h2>
+            <p class="panel-sub">What the agent will transact</p>
+          </div>
+        </div>
+
+        <div class="sku-card" id="skuCard">
+          <div class="sku-empty">No item selected yet.</div>
+        </div>
+
+        <div class="pay-box" id="payBox">
+          <div class="pay-empty">Select an item to generate a payment link.</div>
+        </div>
+
+        <div class="cat-toggle">
+          <button id="catBtn" class="cat-btn" type="button">Browse catalog</button>
+        </div>
+        <div class="catalog hidden" id="catalog">
+          <div class="cat-loading" id="catLoading">Loading catalog…</div>
+          <div id="catGroups"></div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
