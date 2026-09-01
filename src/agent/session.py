@@ -8,10 +8,13 @@ from ..models.schemas import CartItem, Intent, PaymentMethod, PaymentStatus
 from ..services.catalog import CatalogService
 from ..services.order import OrderService
 from ..services.payment import PaymentService
-from ..services.razorpay import RazorpayClient
+from ..services.policy import PolicyEngine
+from ..services.metrics import metrics_tracker
+from ..services.razorpay import RazorpayClient, get_payment_mode, set_payment_mode
 from ..config.settings import settings
 from ..config.tracing import tracer
 from .intent_parser import IntentParser
+import time as _time
 
 
 class Stage(str, Enum):
@@ -31,6 +34,18 @@ class VariantOption:
 
 
 @dataclass
+class PolicyPayload:
+    approved: bool
+    requires_approval: bool
+    over_budget: bool
+    reason: Optional[str] = None
+    remaining_budget: Optional[int] = None
+    suggested_actions: List[str] = field(default_factory=list)
+    merchant_rule: Optional[str] = None
+    decisions: List[str] = field(default_factory=list)
+
+
+@dataclass
 class AgentReply:
     text: str
     stage: Stage
@@ -46,6 +61,8 @@ class AgentReply:
     product_name: Optional[str] = None
     product_summary: Optional[str] = None
     product_emoji: Optional[str] = None
+    policy: Optional[PolicyPayload] = None
+    latency_ms: Optional[float] = None
 
 
 class ChatSession:
@@ -72,6 +89,16 @@ class ChatSession:
         self.order_service = OrderService(self.razorpay)
         self.payment_service = PaymentService(self.razorpay)
         self.intent_parser = IntentParser()
+        # policy engine: buyer profile + explicit rules evaluated before money moves
+        self.preferred_payment = PaymentMethod.CARD
+        self.policy = PolicyEngine(
+            preferred_payment=self.preferred_payment,
+            monthly_budget=settings.monthly_budget_paise,
+            approval_threshold=settings.approval_threshold_paise,
+        )
+        self.turn_started = _time.perf_counter()
+        self.approval_granted = False
+        self.pending_policy = None
 
     # ---- internal helpers ----
 
@@ -170,6 +197,42 @@ class ChatSession:
         if self.trace_id is None:
             self.trace_id = tracer.start_trace()
         tid = self.trace_id
+        self.turn_started = _time.perf_counter()
+
+        # Control command: switch between LIVE Razorpay API and SIMULATE (no API calls).
+        # Protects the daily payment_links quota during demos — "don't call razorpay api".
+        cmd = re.sub(r"[^a-z0-9 ]", "", message.lower())
+        sim_on = any(p in cmd for p in [
+            "don't call razorpay", "dont call razorpay", "stop calling razorpay",
+            "simulate mode", "simulate payment", "simulate", "mock payments",
+            "fake payments", "simulation mode", "offline mode", "no razorpay",
+            "dont call razorpay api", "don't call razorpay api",
+        ])
+        sim_off = any(p in cmd for p in [
+            "use razorpay", "call razorpay", "live mode", "go live",
+            "real payment", "use real razorpay", "online mode", "set live",
+        ])
+        if sim_on or sim_off:
+            mode = set_payment_mode("simulate" if sim_on else "live")
+            return AgentReply(
+                text=(
+                    f"Payments are now SIMULATED — I will NOT call the Razorpay API, "
+                    f"so the demo quota is safe. Say 'use razorpay' to go back live."
+                    if mode == "simulate"
+                    else "Payments are now LIVE — I will call the real Razorpay API."
+                ),
+                stage=self.stage,
+                success=True,
+                trace_id=tid,
+            )
+        if "payment mode" in cmd or "mode is" in cmd or "what mode" in cmd:
+            mode = get_payment_mode()
+            return AgentReply(
+                text=f"Current payment mode: {mode.upper()} ({'real Razorpay API' if mode == 'live' else 'simulated, no API calls'}).",
+                stage=self.stage,
+                success=True,
+                trace_id=tid,
+            )
 
         if self.stage == Stage.DONE:
             return self.final_reply or AgentReply(
@@ -196,6 +259,9 @@ class ChatSession:
             reply = await self._execute_order(tid)
         if reply.stage == Stage.DONE and reply.success:
             self.final_reply = reply
+        # attach per-turn latency for the metrics/trace story
+        if reply.latency_ms is None:
+            reply.latency_ms = self._turn_latency()
         return reply
 
     # ---- stage handlers ----
@@ -268,7 +334,7 @@ class ChatSession:
         if not chosen:
             variants = self._variant_list(self.candidates)
             return AgentReply(
-                text=f"Sorry, I couldn't match that. Please pick one of these options.",
+                text="Sorry, I couldn't match that. Please pick one of these options.",
                 stage=Stage.SELECT,
                 options=variants,
                 success=True,
@@ -281,6 +347,19 @@ class ChatSession:
         return self._confirm_reply(tid, chosen)
 
     async def _handle_confirm(self, message: str, tid: str) -> AgentReply:
+        # If an approval prompt is pending, "approve"/"authorize" grants it and proceeds.
+        if self.pending_policy and self._approval_granted(message):
+            sid = tracer.start_span(tid, "user_confirmation", input={"message": message})
+            tracer.end_span(tid, sid, output={"confirmed": True, "approved": True})
+            self.pending_policy = False
+            self.approval_granted = True
+            self.stage = Stage.EXECUTE
+            return AgentReply(
+                text="Approved. Placing your order now.",
+                stage=Stage.EXECUTE,
+                success=True,
+                trace_id=tid,
+            )
         if self._deny_requested(message):
             sid = tracer.start_span(tid, "user_confirmation", input={"message": message})
             tracer.end_span(tid, sid, output={"confirmed": False})
@@ -288,14 +367,33 @@ class ChatSession:
             self.candidates = []
             self.selected = None
             self.intent = None
+            self.pending_policy = False
             return AgentReply(
                 text="No problem — the order is cancelled. Is there something else you'd like?",
                 stage=Stage.BROWSE,
                 success=True,
                 trace_id=tid,
             )
-        if self._confirm_requested(message):
+        if self._confirm_requested(message) or self._approval_granted(message):
             sid = tracer.start_span(tid, "user_confirmation", input={"message": message})
+            # Policy approval gate: big purchases pause for explicit human approval.
+            needs_approval = self.policy and self._current_price() >= self.policy.approval_threshold
+            if needs_approval and not self.approval_granted:
+                tracer.end_span(tid, sid, output={"confirmed": True, "awaiting_approval": True})
+                self.pending_policy = True
+                return AgentReply(
+                    text=(
+                        f"This purchase of \u20b9{self._rupees(self._current_price()):,} is above your "
+                        f"auto-approval limit of \u20b9{self._rupees(self.policy.approval_threshold):,}. "
+                        f"Reply APPROVE to continue, or tell me to change it."
+                    ),
+                    stage=Stage.CONFIRM,
+                    success=True,
+                    trace_id=tid,
+                    product_name=self.selected.name,
+                    product_summary=self._describe(self.selected),
+                    product_emoji=self.selected.emoji,
+                )
             tracer.end_span(tid, sid, output={"confirmed": True, "product": self.selected.name})
             self.stage = Stage.EXECUTE
             return AgentReply(
@@ -357,6 +455,7 @@ class ChatSession:
         # Process payment with failure recovery (card_declined -> UPI, once)
         method = self.payment_method
         attempts = 1
+        recovered = False
         try:
             payment = await self._pay(tid, order, method)
         except Exception as e:
@@ -373,16 +472,36 @@ class ChatSession:
         ):
             method = PaymentMethod.UPI
             attempts += 1
+            recovered = True
             try:
                 payment = await self._pay(tid, order, method)
             except Exception:
                 break
 
         self.stage = Stage.DONE
+        latency = self._turn_latency()
 
         if payment.status == PaymentStatus.SUCCESS:
+            # record the money moved + recovery for the merchant dashboard
+            metrics_tracker.record(
+                outcome="recovered" if recovered else "success",
+                order_id=order.order_id,
+                item=self.selected.name,
+                amount_paise=order.amount,
+                method=method.value,
+                recovered_from="card_declined" if recovered else None,
+                latency_ms=latency,
+            )
+            self.policy.record_spend(order.amount)
+            if recovered:
+                text = (
+                    f"Your card was declined, so I retried with UPI and it succeeded. "
+                    f"Order confirmed! Payment of \u20b9{self._rupees(order.amount):,} recovered via UPI."
+                )
+            else:
+                text = f"Order confirmed! Payment of \u20b9{self._rupees(order.amount):,} succeeded via {method.value.upper()}."
             self.final_reply = AgentReply(
-                text=f"Order confirmed! Payment of \u20b9{self._rupees(order.amount):,} succeeded via {method.value.upper()}.",
+                text=text,
                 stage=Stage.DONE,
                 success=True,
                 order_id=order.order_id,
@@ -394,10 +513,19 @@ class ChatSession:
                 product_name=self.selected.name,
                 product_summary=self._describe(self.selected),
                 product_emoji=self.selected.emoji,
+                latency_ms=latency,
             )
             return self.final_reply
 
         # Give up gracefully
+        metrics_tracker.record(
+            outcome="failed",
+            order_id=order.order_id,
+            item=self.selected.name,
+            amount_paise=order.amount,
+            method=method.value,
+            latency_ms=latency,
+        )
         self.final_reply = AgentReply(
             text=f"Payment failed after {attempts} attempt(s): {payment.error_description}. Please try a different payment method.",
             stage=Stage.DONE,
@@ -408,6 +536,7 @@ class ChatSession:
             error=payment.error_description,
             product_name=self.selected.name,
             product_emoji=self.selected.emoji,
+            latency_ms=latency,
         )
         return self.final_reply
 
@@ -439,21 +568,75 @@ class ChatSession:
 
     # ---- helpers ----
 
+    def _current_price(self) -> int:
+        if not self.selected:
+            return 0
+        return self.selected.price
+
+    def _approval_granted(self, message: str) -> bool:
+        m = message.lower().strip()
+        if "approve" in m or "approved" in m or "authorize" in m or "yes" in m and "approve" in m:
+            self.approval_granted = True
+            return True
+        return False
+
     def _no_match_text(self, query: str) -> str:
         return f"Sorry, I couldn't find a product matching \"{query}\". Try asking for apples, bread, bandages, ice cream cake, or an iPhone 16."
 
     def _confirm_reply(self, tid: str, product) -> AgentReply:
-        sid = tracer.start_span(tid, "user_confirmation", input={"product": product.name})
-        tracer.end_span(tid, sid, output={"confirmed": False, "awaiting": True})
+        amount = product.price  # qty 1 baked into size for variants
+        policy = self._evaluate_policy(tid, product, amount)
+        suffix = ""
+        if policy.requires_approval:
+            suffix = " (approval required)"
+        elif policy.over_budget:
+            suffix = " (over budget)"
+        text = f"Here's what I have: {self._describe(product)}. Shall I place the order{suffix}?"
+        if policy.reason:
+            text += f" {policy.reason}"
+        if policy.suggested_actions:
+            text += " " + " ".join(policy.suggested_actions)
         return AgentReply(
-            text=f"Here's what I have: {self._describe(product)}. Shall I place the order?",
+            text=text,
             stage=Stage.CONFIRM,
             success=True,
             trace_id=tid,
             product_name=product.name,
             product_summary=self._describe(product),
             product_emoji=product.emoji,
+            policy=self._policy_payload(policy),
+            latency_ms=self._turn_latency(),
         )
+
+    def _evaluate_policy(self, tid: str, product, amount_paise: int):
+        sid = tracer.start_span(tid, "policy_check", span_type="TOOL", input={
+            "item": product.item_id, "price": amount_paise, "method": self.payment_method.value,
+        })
+        policy = self.policy.evaluate(amount_paise, self.payment_method, merchant_rule_hint="no-discount-beyond-15%")
+        tracer.end_span(tid, sid, output={
+            "approved": policy.approved,
+            "requires_approval": policy.requires_approval,
+            "over_budget": policy.over_budget,
+            "remaining_budget": policy.remaining_budget,
+            "reason": policy.reason,
+            "decisions": policy.decisions,
+        })
+        return policy
+
+    def _policy_payload(self, p) -> PolicyPayload:
+        return PolicyPayload(
+            approved=p.approved,
+            requires_approval=p.requires_approval,
+            over_budget=p.over_budget,
+            reason=p.reason,
+            remaining_budget=p.remaining_budget,
+            suggested_actions=list(p.suggested_actions),
+            merchant_rule=p.merchant_rule,
+            decisions=list(p.decisions),
+        )
+
+    def _turn_latency(self) -> float:
+        return round((_time.perf_counter() - self.turn_started) * 1000, 1)
 
     def _fail(self, tid: str, message: str) -> AgentReply:
         self.stage = Stage.BROWSE

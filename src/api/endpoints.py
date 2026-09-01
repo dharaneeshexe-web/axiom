@@ -7,9 +7,10 @@ from pathlib import Path
 from pydantic import BaseModel
 from typing import Optional
 from ..agent import CheckoutAgent
-from ..models.schemas import PaymentMethod, AgentState
+from ..models.schemas import PaymentMethod
 from ..config.tracing import tracer, _LMNR_AVAILABLE
-from lmnr import Laminar
+from ..services.metrics import metrics_tracker
+from ..services.razorpay import get_payment_mode, set_payment_mode
 
 
 @asynccontextmanager
@@ -120,7 +121,7 @@ async def checkout(request: CheckoutRequest):
 
 # ---- Multi-turn conversational chat ----
 
-from ..agent.session import ChatSession, AgentReply, VariantOption
+from ..agent.session import ChatSession, AgentReply
 
 # session_id -> (last_active, ChatSession)
 # Bounded to avoid an unbounded in-memory leak across repeated demo runs.
@@ -154,6 +155,17 @@ class VariantOut(BaseModel):
     item_id: str
 
 
+class PolicyOut(BaseModel):
+    approved: bool
+    requires_approval: bool
+    over_budget: bool
+    reason: Optional[str] = None
+    remaining_budget: Optional[int] = None
+    suggested_actions: list[str] = []
+    merchant_rule: Optional[str] = None
+    decisions: list[str] = []
+
+
 class ChatOut(BaseModel):
     session_id: str
     message: str
@@ -170,6 +182,8 @@ class ChatOut(BaseModel):
     product_name: Optional[str] = None
     product_summary: Optional[str] = None
     product_emoji: Optional[str] = None
+    policy: Optional[PolicyOut] = None
+    latency_ms: Optional[float] = None
 
 
 def _to_out(session_id: str, r: AgentReply) -> ChatOut:
@@ -189,6 +203,18 @@ def _to_out(session_id: str, r: AgentReply) -> ChatOut:
         product_name=r.product_name,
         product_summary=r.product_summary,
     )
+    if r.policy is not None:
+        out.policy = PolicyOut(
+            approved=r.policy.approved,
+            requires_approval=r.policy.requires_approval,
+            over_budget=r.policy.over_budget,
+            reason=r.policy.reason,
+            remaining_budget=r.policy.remaining_budget,
+            suggested_actions=list(r.policy.suggested_actions),
+            merchant_rule=r.policy.merchant_rule,
+            decisions=list(r.policy.decisions),
+        )
+    out.latency_ms = r.latency_ms
     return out
 
 
@@ -247,9 +273,34 @@ async def get_trace(trace_id: str):
     return tracer.export_trace(trace_id)
 
 
+@app.get("/traces/{trace_id}/stages")
+async def get_trace_stages(trace_id: str):
+    trace = tracer.get_trace(trace_id)
+    if not trace:
+        raise HTTPException(status_code=404, detail="Trace not found")
+    return tracer.stage_latency(trace_id)
+
+
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "version": "1.0.0"}
+
+
+class PaymentModeRequest(BaseModel):
+    mode: str
+
+
+@app.get("/payment-mode")
+async def get_mode():
+    return {"mode": get_payment_mode()}
+
+
+@app.post("/payment-mode")
+async def set_mode(req: PaymentModeRequest):
+    """Switch between "live" (real Razorpay API) and "simulate" (no API calls).
+    Protects the daily payment_links quota during demos."""
+    mode = set_payment_mode(req.mode)
+    return {"mode": mode}
 
 
 # ---- Catalog browse (powers the demo dashboard) ----
@@ -291,6 +342,30 @@ async def browse_catalog():
         ) for p in items]
         for cat, items in grouped.items()
     }
+
+@app.get("/metrics")
+async def merchant_metrics():
+    summary = metrics_tracker.summary()
+    # P4: average per-stage latency across completed traces (decision-graph timing)
+    stage_total: dict = {}
+    stage_count: dict = {}
+    for trace in tracer.get_all_traces().values():
+        for span in trace:
+            name = span.get("name")
+            if name not in tracer.STAGE_ORDER:
+                continue
+            dur = (span.get("attributes") or {}).get("duration_ms")
+            if dur is None:
+                continue
+            stage_total[name] = stage_total.get(name, 0) + dur
+            stage_count[name] = stage_count.get(name, 0) + 1
+    summary["stage_latency_ms"] = {
+        name: round(stage_total[name] / stage_count[name], 1)
+        for name in tracer.STAGE_ORDER
+        if name in stage_count
+    }
+    return summary
+
 
 # ---- Static demo console ----
 _STATIC_DIR = Path(__file__).resolve().parent.parent / "static"

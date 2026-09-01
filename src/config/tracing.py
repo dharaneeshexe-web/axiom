@@ -138,6 +138,10 @@ class LaminarTracer:
                     if span.span_id == span_id:
                         span.end_time = datetime.utcnow()
                         span.status = status
+                        # P4: per-stage latency, computed from start/end (ms)
+                        span.attributes["duration_ms"] = round(
+                            (span.end_time - span.start_time).total_seconds() * 1000, 1
+                        )
                         if attributes:
                             span.attributes.update(attributes)
                         break
@@ -225,6 +229,33 @@ class LaminarTracer:
 
     def get_all_traces(self) -> Dict[str, list]:
         return {tid: self.get_trace(tid) for tid in self.traces}
+
+    # decision-graph stage order — used to present latency in a stable sequence
+    STAGE_ORDER = [
+        "parse_intent",
+        "query_catalog",
+        "select_product",
+        "policy_check",
+        "user_confirmation",
+        "create_order",
+        "process_payment",
+        "handle_payment_failure",
+    ]
+
+    def stage_latency(self, trace_id: str) -> Dict[str, Any]:
+        """Ordered per-stage latency breakdown for a trace (P4)."""
+        spans = self.get_trace(trace_id)
+        stages = {}
+        for span in spans:
+            if span["name"] not in self.STAGE_ORDER:
+                continue
+            stages[span["name"]] = {
+                "duration_ms": span["attributes"].get("duration_ms", 0),
+                "status": span["status"],
+            }
+        ordered = {k: stages[k] for k in self.STAGE_ORDER if k in stages}
+        total = round(sum(v["duration_ms"] for v in ordered.values()), 1)
+        return {"stages": ordered, "total_ms": total}
 
     def export_trace(self, trace_id: str) -> Dict[str, Any]:
         return {

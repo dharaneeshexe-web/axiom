@@ -14,11 +14,14 @@
   const stagePill = $("#stagePill");
   const skuCard = $("#skuCard");
   const payBox = $("#payBox");
+  const policyBox = $("#policyBox");
   const laminarLink = $("#laminarLink");
   const catBtn = $("#catBtn");
   const catalog = $("#catalog");
   const catGroups = $("#catGroups");
   const catLoading = $("#catLoading");
+  const metricsGrid = $("#metricsGrid");
+  const metricsRefresh = $("#metricsRefresh");
 
   let sessionId = null;
   let busy = false;
@@ -204,6 +207,17 @@
     traceLog.innerHTML = "";
   }
 
+  function resetPanels() {
+    // clearing stale state prevents flicker/glitches when switching scenarios or after a failure
+    lastTraceId = null;
+    clearTraceLog();
+    traceLog.innerHTML =
+      `<div class="empty-state"><div class="empty-orbit"></div><p>No trace yet.</p><p class="empty-sub">Send a message to watch the agent think.</p></div>`;
+    renderSku(null);
+    renderPay(null);
+    renderPolicy(null);
+  }
+
   function renderTrace(spans) {
     clearTraceLog();
     if (!spans || !spans.length) {
@@ -212,7 +226,7 @@
       return;
     }
     const ordered = spans.slice().sort((a, b) => {
-      const order = ["parse_intent", "query_catalog", "select_product", "user_confirmation", "create_order", "process_payment", "handle_payment_failure", "checkout_request", "agent_run"];
+      const order = ["parse_intent", "query_catalog", "select_product", "policy_check", "user_confirmation", "create_order", "process_payment", "handle_payment_failure", "checkout_request", "agent_run"];
       const ia = order.indexOf(a.name);
       const ib = order.indexOf(b.name);
       if (ia !== -1 && ib !== -1) return ia - ib;
@@ -222,10 +236,14 @@
       const row = document.createElement("div");
       row.className = "trace-row " + (sp.status === "error" ? "error" : sp.status === "running" ? "running" : "completed");
       const t = new Date(sp.start_time).toLocaleTimeString("en-IN", { hour12: false });
+      const dur = (sp.attributes && sp.attributes.duration_ms != null)
+        ? `<span class="trace-dur">${(+sp.attributes.duration_ms).toFixed(0)}ms</span>`
+        : "";
       row.innerHTML =
         `<span class="trace-status">${sp.status === "error" ? "\u2715" : sp.status === "running" ? "\u25CF" : "\u2713"}</span>` +
         `<span class="trace-name">${esc(sp.name)}</span>` +
-        `<span class="trace-time">${t}</span>`;
+        `<span class="trace-time">${t}</span>` +
+        dur;
       traceLog.appendChild(row);
     });
     scrollTrace();
@@ -271,6 +289,56 @@
       `<span class="pay-url">${esc(data.payment_link)}</span>` +
       `<a class="open-link" href="${esc(data.payment_link)}" target="_blank" rel="noopener">Pay</a>` +
       `</div>`;
+  }
+
+  function renderPolicy(data) {
+    if (!data || !data.policy) {
+      policyBox.innerHTML =
+        `<div class="policy-empty"><span class="policy-rule">Policy check runs before any money moves.</span></div>`;
+      return;
+    }
+    const p = data.policy;
+    const bits = [];
+    const steps = (p.decisions || []).map((d) => `<span class="dg-step">${esc(d)}</span>`).join("");
+    if (p.requires_approval) {
+      bits.push(`<span class="rule-badge warn">AUTO-APPROVAL REQUIRED</span>`);
+    }
+    if (p.over_budget) {
+      bits.push(`<span class="rule-badge danger">OVER BUDGET</span>`);
+    }
+    if (!p.requires_approval && !p.over_budget) {
+      bits.push(`<span class="rule-badge ok">POLICY PASS</span>`);
+    }
+    if (p.remaining_budget != null) {
+      bits.push(`<span class="rule-note">budget left this month: <b>${rupee(p.remaining_budget)}</b></span>`);
+    }
+    if (p.suggested_actions && p.suggested_actions.length) {
+      p.suggested_actions.forEach((a) => bits.push(`<span class="rule-note">${esc(a)}</span>`));
+    }
+    if (p.merchant_rule) {
+      bits.push(`<span class="rule-note">merchant rule: ${esc(p.merchant_rule)}</span>`);
+    }
+    policyBox.innerHTML =
+      `<div class="policy-head">Decision Graph</div>` +
+      `<div class="dg-steps">${steps || ""}</div>` +
+      `<div class="policy-rules">${bits.join("")}</div>` +
+      (p.reason ? `<div class="policy-reason">${esc(p.reason)}</div>` : "");
+  }
+
+  async function refreshMetrics() {
+    try {
+      const r = await fetch("/metrics");
+      if (!r.ok) return;
+      const m = await r.json();
+      metricsGrid.innerHTML =
+        `<div class="metric"><span class="m-label">Orders</span><span class="m-value">${m.total_orders}</span></div>` +
+        `<div class="metric"><span class="m-label">Conversion</span><span class="m-value">${m.conversion_rate_pct}%</span></div>` +
+        `<div class="metric"><span class="m-label">Recovery rate</span><span class="m-value">${m.recovery_rate_pct}%</span></div>` +
+        `<div class="metric accent"><span class="m-label">Revenue recovered</span><span class="m-value">${rupee(m.revenue_recovered_paise)}</span></div>` +
+        `<div class="metric"><span class="m-label">Succeeded / Failed / Recovered</span><span class="m-value">${m.succeeded} / ${m.failed} / ${m.recovered}</span></div>`;
+    } catch (e) {
+      /* best-effort */
+    }
   }
 
   async function fetchTrace(traceId) {
@@ -331,7 +399,10 @@
       speak(data.message);
       renderSku(data);
       renderPay(null);
-      scheduleAutoConfirm();
+      renderPolicy(data);
+      if (!(data.policy && data.policy.requires_approval)) {
+        scheduleAutoConfirm();
+      }
       return;
     }
 
@@ -343,10 +414,17 @@
         renderSku(data);
         renderPay(data);
         addMetaNote(`Payment ${data.payment_status} · order ${data.order_id}`, false, data.order_id);
+        refreshMetrics();
       } else {
+        // clear any stale success/payment-link visuals so the failure shows cleanly
+        renderPolicy(null);
+        payBox.innerHTML =
+          `<div><span class="pay-status error">${esc(data.payment_status || "failed")}</span></div>` +
+          (data.error ? `<div class="pay-meta"><span>${esc(data.error)}</span></div>` : "") +
+          `<div class="pay-meta"><span class="muted">The agent will not block on this — try a different method.</span></div>`;
         renderSku(data);
-        renderPay(data);
         addMetaNote(`Payment failed → ${data.error}`, true);
+        refreshMetrics();
       }
       return;
     }
@@ -367,7 +445,7 @@
       sessionId = data.session_id;
       addAgentMsg(data.message);
       setStage("browse");
-      renderTrace(null);
+      resetPanels();
     } catch (e) {
       addAgentMsg("Could not start a session — is the server running?");
     }
@@ -385,8 +463,7 @@
     chip.addEventListener("click", () => {
       if (busy) return;
       clearTimeout(autoConfirmTimer);
-      renderSku(null);
-      renderPay(null);
+      resetPanels();
       // new session per scenario for a clean demo
       fetch("/chat")
         .then((r) => r.json())
@@ -424,6 +501,9 @@
       }
     }
   });
+
+  metricsRefresh.addEventListener("click", refreshMetrics);
+  refreshMetrics();
 
   function renderCatalog(groups) {
     catGroups.innerHTML = "";

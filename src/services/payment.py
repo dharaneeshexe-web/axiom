@@ -2,7 +2,7 @@ import uuid
 from typing import Dict, Any, Optional
 from datetime import datetime
 from ..models.schemas import Payment, PaymentStatus, PaymentMethod, Order
-from .razorpay import RazorpayClient
+from .razorpay import RazorpayClient, get_payment_mode
 from ..config.settings import settings
 
 
@@ -37,6 +37,23 @@ class PaymentService:
                 return payment
             self._declined_tried = True
             return self._simulate_failure(order, method)
+
+        # Simulate mode: NEVER call the real Razorpay API. Protects the daily
+        # payment_links quota during repeated demos / spot-checks.
+        if get_payment_mode() == "simulate":
+            payment = Payment(
+                payment_id=f"pay_sim_{uuid.uuid4().hex[:12]}",
+                order_id=order.order_id,
+                amount=order.amount,
+                currency=order.currency,
+                method=method,
+                status=PaymentStatus.SUCCESS,
+                created_at=datetime.utcnow(),
+            )
+            # simulated payable link so the demo UI still shows a pay action
+            payment.alias = f"https://sim.razorpay.example/p/{payment.payment_id}"
+            self.payments[payment.payment_id] = payment
+            return payment
 
         # Real flow: create a Razorpay payment link for the order (money-collection surface)
         try:

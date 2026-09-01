@@ -696,3 +696,65 @@ fast, with a precise message).
   rate-limited) so the money step still shows success without consuming the real 30.
 - The `DEMO_FAILURE=card_declined` sim path and the graceful-429 handler are both available to
   show a clean recovery without spending the daily quota.
+
+---
+
+## P1-P5 Pivot: "AI Financial Decision Engine" (in progress)
+
+Review repositioned Axiom from "AI checkout" to "AI Financial Decision Engine" — the agent makes
+REAL decisions (policy/budget/approval/retry), not just "buy watch" flows. What is DONE vs pending:
+
+### P1 — Policy Engine (DONE, backend wired)
+- `src/services/policy.py` (NEW): `PolicyEngine` + `PolicyDecision` dataclass with a decision-graph
+  (`decisions` = `budget: OK/OVER`, `approval: AUTO/REQUIRED`, `preference: card/upi`,
+  `merchant: APPLIED`), budget check, ₹50k auto-approval threshold, preference memory, merchant
+  rule. `record_spend()` tracks monthly budget.
+- Session wiring: `ChatSession` owns a `PolicyEngine`; `_confirm_reply` runs `_evaluate_policy`
+  (emits `policy_check` Laminar span) and attaches a `PolicyPayload` to replies.
+- **Approval gate (the WOW):** any purchase >= ₹50k pauses at CONFIRM with
+  "Reply APPROVE to continue". "yes" on a big purchase returns the gate (does NOT execute);
+  "approve" transitions to EXECUTE. Low-cost items auto-approve.
+- Settings: `monthly_budget_paise=10_000_000` (₹1L), `approval_threshold_paise=5_000_000` (₹50k).
+
+### P2 — Merchant Metrics (DONE, backend wired; dashboard built)
+- `src/services/metrics.py` (NEW): `MetricsTracker` + `CheckoutEvent` + shared `metrics_tracker`
+  singleton. Records `success` / `recovered` / `failed` with `amount_paise`, `method`,
+  `recovered_from`, `latency_ms`. `summary()` yields orders, conversion %, recovery %, revenue
+  recovered, recent-10 list.
+- `session._execute_order` records an event on success/failure and `policy.record_spend()` on
+  success. Recovery (card_declined -> UPI) recorded as `recovered`.
+- `GET /metrics` endpoint. Frontend **Merchant Health** strip (orders, conversion, recovery rate,
+  revenue recovered, S/F/R counts) + **Policy/Decision-Graph** panel (badges PASS /
+  APPROVAl-REQUIRED / OVER-BUDGET, decision-step chips, suggested actions, reason).
+
+### P4 — Per-stage latency (DONE, backend; frontend pending-ish)
+- `src/config/tracing.py`: `end_span` now stamps `duration_ms` on every span (from start/end);
+  added `stage_latency(trace_id)` returning an ORDERED breakdown of `parse_intent ->
+  query_catalog -> select_product -> policy_check -> user_confirmation -> create_order ->
+  process_payment -> handle_payment_failure` with per-stage `duration_ms` + `status` and
+  `total_ms`.
+- `GET /traces/{trace_id}/stages` endpoint returns that breakdown.
+
+### P4 — Terminal rate-limit fast-fail (DONE, critical)
+- `src/services/razorpay.py` `_request`: detects `RATE_LIMIT_EXCEEDED` (daily `payment_link` cap)
+  and fails immediately instead of burning ~24s in pointless 429 backoff. Verified: iPhone flow
+  money step fails gracefully in **2.3s** (was ~29s) with the precise cap message.
+
+### Verified end-to-end (P1/P2/P4, 13/13 + 9/9 smoke)
+- iPhone (₹85,900): browse -> variants -> Blue 256GB -> confirm (**approval REQUIRED**,
+  `approval: REQUIRED` in decisions) -> "yes" = gate -> "approve" = EXECUTE -> money fails
+  gracefully in 2.3s (live cap exhausted).
+- Bandage (₹180) / Cake (₹450): **auto-approved** (`approval: AUTO`) -> pay.
+- `/metrics` reflects real events with per-checkout latency; `/traces/{id}/stages` returns
+  per-stage `duration_ms`.
+- Lint: all F-series (F841/F401/F541) errors introduced during pivot cleared; remaining warnings
+  are pre-existing codebase style debt only.
+
+### P3 (frontend decision-graph viz) / P5 (README+pitch narrative) / per-stage latency frontend
+Still pending. `policy_check` is ordered in the trace panel but the fuller decision-graph
+visualization + Merchant Health + policy panel are the frontend pieces already shipped; P5 = docs.
+
+### Not committed (per directive)
+All P1/P2/P4 work is uncommitted on `master`. Diff: src/agent/session.py, src/api/endpoints.py,
+src/config/tracing.py, src/config/settings.py, src/services/razorpay.py, src/static/{app.js,
+index.html, style.css}; new src/services/{policy.py, metrics.py}.

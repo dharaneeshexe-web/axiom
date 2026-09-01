@@ -2,7 +2,7 @@ import uuid
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 from ..models.schemas import Order, OrderStatus, CartItem
-from .razorpay import RazorpayClient
+from .razorpay import RazorpayClient, get_payment_mode
 
 
 class OrderService:
@@ -17,6 +17,22 @@ class OrderService:
         customer_id: Optional[str] = None,
     ) -> Order:
         total_amount = sum(item.price * item.quantity for item in items)
+
+        # Simulate mode: never touch the real Razorpay API (protects quotas during demos).
+        if get_payment_mode() == "simulate":
+            order = Order(
+                order_id=f"ord_sim_{uuid.uuid4().hex[:8]}",
+                amount=total_amount,
+                currency="INR",
+                status=OrderStatus.CREATED,
+                items=items,
+                merchant_id=merchant_id,
+                customer_id=customer_id,
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow(),
+            )
+            self.orders[order.order_id] = order
+            return order
 
         razorpay_order = await self.razorpay.create_order({
             "amount": total_amount,

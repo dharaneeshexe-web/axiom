@@ -108,6 +108,12 @@
           <div class="pay-empty">Select an item to generate a payment link.</div>
         </div>
 
+        <div class="policy-box" id="policyBox">
+          <div class="policy-empty">
+            <span class="policy-rule">Policy check runs before any money moves.</span>
+          </div>
+        </div>
+
         <div class="cat-toggle">
           <button id="catBtn" class="cat-btn" type="button">Browse catalog</button>
         </div>
@@ -118,6 +124,20 @@
       </section>
 
     </main>
+
+    <!-- Merchant dashboard strip -->
+    <section class="panel metrics-panel">
+      <div class="panel-head">
+        <div>
+          <h2>Merchant Health</h2>
+          <p class="panel-sub">Track-1 growth evidence · live from this session</p>
+        </div>
+        <button id="metricsRefresh" class="cat-btn" type="button">Refresh</button>
+      </div>
+      <div class="metrics-grid" id="metricsGrid">
+        <div class="m-note">Running first checkout to populate…</div>
+      </div>
+    </section>
   </div>
 
   <script src="/static/app.js"></script>
