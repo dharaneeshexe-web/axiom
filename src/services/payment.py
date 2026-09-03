@@ -1,15 +1,17 @@
 import uuid
-from typing import Dict, Any, Optional
 from datetime import datetime
-from ..models.schemas import Payment, PaymentStatus, PaymentMethod, Order
-from .razorpay import RazorpayClient, get_payment_mode
+from typing import Any
+
 from ..config.settings import settings
+from ..models.schemas import Order, Payment, PaymentMethod, PaymentStatus
+from .razorpay import RazorpayClient, get_payment_mode
+from .webhook_store import WebhookRecord, webhook_store
 
 
 class PaymentService:
     def __init__(self, razorpay: RazorpayClient):
         self.razorpay = razorpay
-        self.payments: Dict[str, Payment] = {}
+        self.payments: dict[str, Payment] = {}
         self.demo_failure = settings.demo_failure.lower() or "none"
         self._declined_tried = False
 
@@ -17,8 +19,8 @@ class PaymentService:
         self,
         order: Order,
         method: PaymentMethod,
-        card_details: Optional[Dict[str, Any]] = None,
-        upi_id: Optional[str] = None,
+        card_details: dict[str, Any] | None = None,
+        upi_id: str | None = None,
     ) -> Payment:
         # Deterministic demo failure simulation (models real Razorpay error responses)
         if self.demo_failure != "none":
@@ -78,6 +80,25 @@ class PaymentService:
             )
             # attach link url for the demo/response
             payment.alias = link.get("short_url")
+
+            # Register the real payment link so a later webhook (payment.failed)
+            # can look up the order and drive an automatic UPI recovery.
+            try:
+                webhook_store.register(
+                    link.get("id"),
+                    WebhookRecord(
+                        order_id=order.order_id,
+                        currency=order.currency,
+                        amount=order.amount,
+                        method="card",
+                        item=(order.items[0].name if order.items else None),
+                    ),
+                    order.order_id,
+                )
+            except Exception:
+                # registration must never break the money path
+                pass
+
             self.payments[payment.payment_id] = payment
             return payment
 
@@ -131,7 +152,7 @@ class PaymentService:
         self.payments[payment.payment_id] = payment
         return payment
 
-    async def capture_payment(self, payment_id: str, amount: int) -> Optional[Payment]:
+    async def capture_payment(self, payment_id: str, amount: int) -> Payment | None:
         try:
             await self.razorpay.capture_payment(payment_id, amount)
             if payment_id in self.payments:
@@ -142,12 +163,12 @@ class PaymentService:
         except Exception:
             return None
 
-    async def get_payment(self, payment_id: str) -> Optional[Payment]:
+    async def get_payment(self, payment_id: str) -> Payment | None:
         if payment_id in self.payments:
             return self.payments[payment_id]
         return None
 
-    async def refund_payment(self, payment_id: str) -> Optional[Payment]:
+    async def refund_payment(self, payment_id: str) -> Payment | None:
         try:
             await self.razorpay.create_refund(payment_id)
             if payment_id in self.payments:

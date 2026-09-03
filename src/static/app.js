@@ -361,6 +361,17 @@ let currentMode = "simulate";
         `<div class="metric"><span class="m-label">Recovery rate</span><span class="m-value">${m.recovery_rate_pct}%</span></div>` +
         `<div class="metric accent"><span class="m-label">Revenue recovered</span><span class="m-value">${rupee(m.revenue_recovered_paise)}</span></div>` +
         `<div class="metric"><span class="m-label">Succeeded / Failed / Recovered</span><span class="m-value">${m.succeeded} / ${m.failed} / ${m.recovered}</span></div>`;
+      const recs = (m.recoveries || []).filter((x) => x && x.recovered_link);
+      if (recs.length) {
+        metricsGrid.innerHTML +=
+          `<div class="metric full"><span class="m-label" style="letter-spacing:.05em">Webhook recoveries</span>` +
+          recs.map(
+            (x) =>
+              `<div class="recovery-row"><span class="recovery-item">${esc(x.item || "order")}</span>` +
+              `<a class="recovery-link" target="_blank" rel="noopener" href="${esc(x.recovered_link)}">pay (UPI)</a></div>`
+          ).join("") +
+          `</div>`;
+      }
     } catch (e) {
       /* best-effort */
     }

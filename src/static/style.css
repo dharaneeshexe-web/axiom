@@ -523,4 +523,13 @@ body {
   background-clip: text;
   -webkit-text-fill-color: transparent;
 }
+.metric.full { grid-column: 1 / -1; }
+.recovery-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  font-size: 12px; color: var(--text-dim); font-family: var(--mono);
+  border-top: 1px solid var(--line); padding-top: 6px;
+}
+.recovery-item { color: var(--text); }
+.recovery-link { color: var(--accent); font-size: 12px; text-decoration: none; }
+.recovery-link:hover { text-decoration: underline; }
 .m-note { color: var(--text-faint); font-family: var(--mono); font-size: 13px; padding: 0 18px 18px; }

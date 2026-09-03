@@ -1,6 +1,6 @@
-from pydantic_settings import BaseSettings
+
 from pydantic import Field
-from typing import Optional
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
@@ -11,6 +11,9 @@ class Settings(BaseSettings):
     # Optional fallback keys (test-mode payment_links cap is 30/day per account).
     # Format: comma-separated "key_id:key_secret" pairs, e.g. "rzp_test_x:secret1,rzp_test_y:secret2"
     razorpay_extra_keys: str = Field(default="", env="RAZORPAY_EXTRA_KEYS")
+    # Webhook secret from the Razorpay dashboard (used to verify webhook HMAC).
+    # If empty, webhooks are accepted but not verified (dev/ngrok only).
+    webhook_secret: str = Field(default="", env="WEBHOOK_SECRET")
 
     @property
     def razorpay_creds_list(self) -> list[tuple[str, str]]:
@@ -36,7 +39,7 @@ class Settings(BaseSettings):
 
     # Laminar
     laminar_api_key: str = Field(default="", env="LMNR_PROJECT_API_KEY")
-    laminar_project_id: Optional[str] = Field(default=None, env="LAMINAR_PROJECT_ID")
+    laminar_project_id: str | None = Field(default=None, env="LAMINAR_PROJECT_ID")
 
     # Database
     database_url: str = Field(default="sqlite:///./payments.db", env="DATABASE_URL")

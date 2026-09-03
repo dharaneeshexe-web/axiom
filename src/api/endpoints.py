@@ -1,17 +1,21 @@
+import json
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from ..agent import CheckoutAgent
+from ..config.settings import settings as app_settings
 from ..config.tracing import _LMNR_AVAILABLE, tracer
 from ..models.schemas import PaymentMethod
 from ..services.metrics import metrics_tracker
-from ..services.razorpay import get_payment_mode, set_payment_mode
+from ..services.razorpay import RazorpayClient, get_payment_mode, set_payment_mode
+from ..services.webhook_recovery import WebhookRecoveryHandler, verify_signature
+from ..services.webhook_store import webhook_store
 
 
 @asynccontextmanager
@@ -390,7 +394,56 @@ async def merchant_metrics():
         for name in tracer.STAGE_ORDER
         if name in stage_count
     }
+    summary["recoveries"] = webhook_store.recent_recoveries()
     return summary
+
+
+# ---- Razorpay webhook (real payment-failure recovery) ----
+@app.post("/webhooks/razorpay")
+async def razorpay_webhook(request: Request):
+    """Receive payment.failed / payment.paid webhooks from Razorpay and drive
+    an automatic, bounded recovery (declined card -> UPI link for the same order).
+
+    Signature (`X-Razorpay-Signature`) is verified when a WEBHOOK_SECRET is set.
+    Only retryable/transient failures are recovered; fraud/risk causes are never
+    re-attempted (defence-only, Track-1 bar)."""
+    raw = await request.body()
+    signature = request.headers.get("X-Razorpay-Signature", "")
+    secret = app_settings.webhook_secret
+
+    if secret:
+        if not verify_signature(raw, signature, secret):
+            raise HTTPException(status_code=400, detail="invalid webhook signature")
+
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="malformed webhook body") from None
+
+    handler = WebhookRecoveryHandler(RazorpayClient(), secret=secret)
+    decision = await handler.handle(payload)
+
+    # Record any recovery in the merchant dashboard for honest metrics.
+    if decision.action == "recovered" and decision.order_id:
+        rec = handler.store.by_order(decision.order_id) if decision.order_id else None
+        metrics_tracker.record(
+            outcome="recovered",
+            order_id=decision.order_id,
+            item=(rec.item if rec else None),
+            amount_paise=(rec.amount if rec else 0),
+            method=decision.recovered_method,
+            recovered_from=decision.error_code or "card",
+        )
+
+    return {
+        "received": decision.received,
+        "verified": decision.verified,
+        "event": decision.event,
+        "action": decision.action,
+        "order_id": decision.order_id,
+        "recovered_link": decision.recovered_link,
+        "reason": decision.reason,
+    }
 
 
 # ---- Static demo console ----
