@@ -31,6 +31,7 @@
   let sessionId = null;
   let busy = false;
   let autoConfirmTimer = null;
+let currentMode = "simulate";
   let lastTraceId = null;
 
   /* ---- Voice (browser-only, ₹0, no server) ---- */
@@ -193,6 +194,23 @@
     scrollChat();
   }
 
+  function addUpsell(data) {
+    const host = document.createElement("div");
+    host.className = "msg agent";
+    host.innerHTML =
+      `<span class="who">agent</span>` +
+      `<div class="upsell"><div class="upsell-title">Suggested add-on</div>` +
+      `<div class="upsell-row"><span class="upsell-label">${esc(data.upsell_label)}</span>` +
+      `<span class="variant-price">${rupee(data.upsell_price)}</span></div>` +
+      `<div class="upsell-actions"><button class="variant-btn primary" type="button">Yes, add it</button>` +
+      `<button class="variant-btn" type="button">Skip</button></div></div>`;
+    const [accept, skip] = host.querySelectorAll("button");
+    accept.addEventListener("click", () => send("yes add"));
+    skip.addEventListener("click", () => send("yes"));
+    chatLog.appendChild(host);
+    scrollChat();
+  }
+
   function addMetaNote(text, isError, orderId) {
     const el = document.createElement("div");
     el.className = "meta-note" + (isError ? " err" : "");
@@ -285,7 +303,9 @@
       return;
     }
     payBox.innerHTML =
-      `<div><span class="pay-status success">${esc(data.payment_status || "success")}</span></div>` +
+      `<div><span class="pay-status success">${esc(data.payment_status || "success")}</span>` +
+      (currentMode === "simulate" ? `<span class="sim-badge">SIMULATED PAYMENT</span>` : "") +
+      `</div>` +
       `<div class="pay-meta">` +
       (data.order_id ? `<span>order ${esc(data.order_id)}</span>` : "") +
       (data.amount ? `<span>${rupee(data.amount)}</span>` : "") +
@@ -405,6 +425,12 @@
       renderSku(data);
       renderPay(null);
       renderPolicy(data);
+      // Cross-sell: when a bounded in-budget add-on is offered, pause for the
+      // human to accept or decline it (don't auto-confirm past the upsell).
+      if (data.upsell_item_id) {
+        addUpsell(data);
+        return;
+      }
       // Only auto-confirm low-risk orders. Block auto-confirm when the reply signals
       // approval is required OR the policy payload says so — otherwise "yes" would bounce
       // off the approval gate forever (the infinite user_confirmation loop).
@@ -525,6 +551,7 @@
     modeSub.textContent = live ? "Razorpay API" : "No API calls";
     liveDot.classList.toggle("off", !live);
     liveLabel.textContent = live ? "Live · Razorpay Test Mode" : "Simulate · no API calls";
+    currentMode = live ? "live" : "simulate";
   }
 
   async function refreshPaymentMode() {

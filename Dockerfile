@@ -12,7 +12,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # Install deps first (better layer caching)
-COPY pyproject.toml README.md ./
+COPY pyproject.toml README.md catalog.json ./
 COPY src ./src
 RUN pip install --no-cache-dir .
 

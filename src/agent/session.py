@@ -63,6 +63,9 @@ class AgentReply:
     product_emoji: Optional[str] = None
     policy: Optional[PolicyPayload] = None
     latency_ms: Optional[float] = None
+    upsell_item_id: Optional[str] = None
+    upsell_label: Optional[str] = None
+    upsell_price: Optional[int] = None
 
 
 class ChatSession:
@@ -99,6 +102,7 @@ class ChatSession:
         self.turn_started = _time.perf_counter()
         self.approval_granted = False
         self.pending_policy = None
+        self.upsell: Optional = None
 
     # ---- internal helpers ----
 
@@ -376,15 +380,38 @@ class ChatSession:
             )
         if self._confirm_requested(message) or self._approval_granted(message):
             sid = tracer.start_span(tid, "user_confirmation", input={"message": message})
-            # Policy approval gate: big purchases pause for explicit human approval.
-            needs_approval = self.policy and self._current_price() >= self.policy.approval_threshold
-            if needs_approval and not self.approval_granted:
-                tracer.end_span(tid, sid, output={"confirmed": True, "awaiting_approval": True})
-                self.pending_policy = True
-                policy = self._evaluate_policy(tid, self.selected, self._current_price())
+            price = self._current_price()
+            policy = self._evaluate_policy(tid, self.selected, price)
+
+            # Hard gate: never move money beyond the buyer's remaining monthly
+            # budget. Over-budget is NOT approvable — it is refused, and the
+            # session returns to browse so the buyer can change the item.
+            if policy.over_budget:
+                tracer.end_span(tid, sid, output={"confirmed": True, "blocked": "over_budget"})
+                self.stage = Stage.BROWSE
+                self.candidates = []
+                self.selected = None
+                self.intent = None
+                self.pending_policy = False
                 return AgentReply(
                     text=(
-                        f"This purchase of \u20b9{self._rupees(self._current_price()):,} is above your "
+                        "I can't place this order: it's over your remaining monthly budget "
+                        f"of \u20b9{self._rupees(policy.remaining_budget):,}. "
+                        "Tell me a cheaper option or a lower quantity."
+                    ),
+                    stage=Stage.BROWSE,
+                    success=False,
+                    trace_id=tid,
+                    policy=self._policy_payload(policy),
+                )
+
+            # Policy approval gate: big purchases pause for explicit human approval.
+            if policy.requires_approval and not self.approval_granted:
+                tracer.end_span(tid, sid, output={"confirmed": True, "awaiting_approval": True})
+                self.pending_policy = True
+                return AgentReply(
+                    text=(
+                        f"This purchase of \u20b9{self._rupees(price):,} is above your "
                         f"auto-approval limit of \u20b9{self._rupees(self.policy.approval_threshold):,}. "
                         f"Reply APPROVE to continue, or tell me to change it."
                     ),
@@ -396,13 +423,17 @@ class ChatSession:
                     product_emoji=self.selected.emoji,
                     policy=self._policy_payload(policy),
                 )
-            tracer.end_span(tid, sid, output={"confirmed": True, "product": self.selected.name})
+            tracer.end_span(tid, sid, output={"confirmed": True, "product": self.selected.name, "upsell": bool(self.upsell)})
+            # Resolve the offered cross-sell: accept it or skip it, then execute.
+            if self.upsell and not self._accept_upsell(message):
+                self.upsell = None
             self.stage = Stage.EXECUTE
             return AgentReply(
                 text="Great — placing your order now.",
                 stage=Stage.EXECUTE,
                 success=True,
                 trace_id=tid,
+                policy=self._policy_payload(policy),
             )
         # Ambiguous -> could be a re-spec or a different product
         policy = self._evaluate_policy(tid, self.selected, self._current_price())
@@ -443,11 +474,22 @@ class ChatSession:
                 merchant_id=self.selected.merchant_id,
             )
         ]
+        upsell = self.upsell
+        if upsell is not None:
+            items.append(
+                CartItem(
+                    item_id=upsell.item_id,
+                    name=upsell.name,
+                    quantity=1,
+                    price=upsell.price,
+                    merchant_id=upsell.merchant_id,
+                )
+            )
 
         # Create order
         sid = tracer.start_span(
             tid, "create_order", span_type="TOOL",
-            input={"item": self.selected.item_id, "quantity": quantity, "price": self.selected.price},
+            input={"item": self.selected.item_id, "quantity": quantity, "price": self.selected.price, "upsell": upsell.item_id if upsell else None},
         )
         try:
             order = await self.order_service.create_order(items=items, merchant_id=self.selected.merchant_id)
@@ -600,6 +642,16 @@ class ChatSession:
             text += f" {policy.reason}"
         if policy.suggested_actions:
             text += " " + " ".join(policy.suggested_actions)
+
+        # Cross-sell: only for auto-approved, in-budget orders (growth half of Track 01).
+        upsell = None
+        if not policy.requires_approval and not policy.over_budget:
+            upsell = self._find_upsell(product)
+            if upsell:
+                text += (f" While you're at it, could I add a {self._describe(upsell)} "
+                         f"(+\u20b9{self._rupees(upsell.price):,})?")
+        self.upsell = upsell  # remember the offered cross-sell for the next turn
+
         return AgentReply(
             text=text,
             stage=Stage.CONFIRM,
@@ -610,7 +662,43 @@ class ChatSession:
             product_emoji=product.emoji,
             policy=self._policy_payload(policy),
             latency_ms=self._turn_latency(),
+            upsell_item_id=upsell.item_id if upsell else None,
+            upsell_label=self._describe(upsell) if upsell else None,
+            upsell_price=upsell.price if upsell else None,
         )
+
+    def _find_upsell(self, product) -> Optional:
+        """Pick a single, complementary, budget-bounded cross-sell for the item."""
+        if not product or not self.policy:
+            return None
+        category = (product.category or "").lower()
+        # map main item -> candidate accessory item ids (curated, bounded)
+        target = None
+        if "electronics" in category and "iphone" in product.name.lower():
+            target = self.catalog.get_product("earbuds_1")
+        elif "electronics" in category and "phone" in product.name.lower():
+            target = self.catalog.get_product("earbuds_1")
+        elif "food" in category and "cake" in product.name.lower():
+            target = self.catalog.get_product("brownie_1")
+        elif "food" in category and "coffee" in product.name.lower():
+            target = self.catalog.get_product("tea_250g")
+        if not target:
+            return None
+        # bounded: the add-on must fit the remaining budget and be substantially
+        # smaller than the main purchase (no surprise bill inflation).
+        remaining = self.policy.remaining_budget
+        if target.price > remaining or target.price > product.price:
+            return None
+        return target
+
+    def _accept_upsell(self, message: str) -> bool:
+        m = message.lower()
+        if any(k in m for k in ("add", "sure", "why not", "yes add", "go for it")):
+            return True
+        if self.upsell is not None and self.upsell.name and self.upsell.name.lower() in m:
+            return True
+        return False
+
 
     def _evaluate_policy(self, tid: str, product, amount_paise: int):
         sid = tracer.start_span(tid, "policy_check", span_type="TOOL", input={

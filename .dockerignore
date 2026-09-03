@@ -33,3 +33,4 @@ test_*.py
 .DS_Store
 Thumbs.db
 data/
+!src/data/

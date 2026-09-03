@@ -5,7 +5,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pathlib import Path
 from pydantic import BaseModel
-from typing import Optional
+from typing import List, Optional
 from ..agent import CheckoutAgent
 from ..models.schemas import PaymentMethod
 from ..config.tracing import tracer, _LMNR_AVAILABLE
@@ -184,6 +184,9 @@ class ChatOut(BaseModel):
     product_emoji: Optional[str] = None
     policy: Optional[PolicyOut] = None
     latency_ms: Optional[float] = None
+    upsell_item_id: Optional[str] = None
+    upsell_label: Optional[str] = None
+    upsell_price: Optional[int] = None
 
 
 def _to_out(session_id: str, r: AgentReply) -> ChatOut:
@@ -215,6 +218,9 @@ def _to_out(session_id: str, r: AgentReply) -> ChatOut:
             decisions=list(r.policy.decisions),
         )
     out.latency_ms = r.latency_ms
+    out.upsell_item_id = r.upsell_item_id
+    out.upsell_label = r.upsell_label
+    out.upsell_price = r.upsell_price
     return out
 
 
@@ -323,25 +329,44 @@ class CatalogItemOut(BaseModel):
     flavor: Optional[str] = None
 
 
+def _to_catalog_item(p) -> CatalogItemOut:
+    return CatalogItemOut(
+        item_id=p.item_id,
+        name=p.name,
+        description=p.description,
+        price=p.price,
+        merchant_name=p.merchant_name,
+        category=p.category,
+        emoji=p.emoji,
+        color=p.color,
+        storage=p.storage,
+        size=p.size,
+        flavor=p.flavor,
+    )
+
+
 @app.get("/catalog", response_model=dict)
 async def browse_catalog():
     grouped = _catalog_service.by_category()
     return {
-        cat: [CatalogItemOut(
-            item_id=p.item_id,
-            name=p.name,
-            description=p.description,
-            price=p.price,
-            merchant_name=p.merchant_name,
-            category=p.category,
-            emoji=p.emoji,
-            color=p.color,
-            storage=p.storage,
-            size=p.size,
-            flavor=p.flavor,
-        ) for p in items]
+        cat: [_to_catalog_item(p) for p in items]
         for cat, items in grouped.items()
     }
+
+
+@app.get("/catalog/search", response_model=List[CatalogItemOut])
+async def search_catalog(q: Optional[str] = None):
+    if not q:
+        return [_to_catalog_item(p) for p in _catalog_service.list_all()]
+    return [_to_catalog_item(p) for p in _catalog_service.search_products(q)]
+
+
+@app.get("/catalog/item/{item_id}", response_model=CatalogItemOut)
+async def get_catalog_item(item_id: str):
+    p = _catalog_service.get_product(item_id)
+    if p is None:
+        raise HTTPException(status_code=404, detail=f"item not found: {item_id}")
+    return _to_catalog_item(p)
 
 @app.get("/metrics")
 async def merchant_metrics():
@@ -379,3 +404,9 @@ async def index():
         str(_STATIC_DIR / "index.html"),
         headers={"Cache-Control": "no-store"},
     )
+
+
+def main() -> None:
+    import uvicorn
+
+    uvicorn.run("src.api.endpoints:app", host="0.0.0.0", port=8000)
