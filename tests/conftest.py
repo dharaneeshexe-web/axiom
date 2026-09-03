@@ -7,10 +7,11 @@ policy engine, payment simulation and no-loop guarantees testable with zero
 external calls.
 """
 
+import pytest
+
 import src.agent.session as session_mod
 from src.models.schemas import Intent, PaymentMethod
 from src.services.razorpay import set_payment_mode
-import pytest
 
 
 class StubIntentParser:

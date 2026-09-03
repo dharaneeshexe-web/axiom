@@ -6,7 +6,6 @@ most important guarantees: stage transitions, the policy approval gate, the
 approval-gate auto-confirm loop regression, and card-declined -> UPI recovery.
 """
 
-import pytest
 
 from src.agent.session import ChatSession, Stage
 from src.services.razorpay import set_payment_mode
@@ -95,6 +94,7 @@ async def test_catalog_loads_48_products_from_json():
 
 def test_catalog_search_endpoints():
     from fastapi.testclient import TestClient
+
     from src.api.endpoints import app
     c = TestClient(app)
     r = c.get("/catalog/search?q=chicken")

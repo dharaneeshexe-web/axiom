@@ -1,14 +1,15 @@
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
-from fastapi import FastAPI, HTTPException
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
 from pathlib import Path
+
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from typing import List, Optional
+
 from ..agent import CheckoutAgent
+from ..config.tracing import _LMNR_AVAILABLE, tracer
 from ..models.schemas import PaymentMethod
-from ..config.tracing import tracer, _LMNR_AVAILABLE
 from ..services.metrics import metrics_tracker
 from ..services.razorpay import get_payment_mode, set_payment_mode
 
@@ -30,19 +31,19 @@ app = FastAPI(
 
 class CheckoutRequest(BaseModel):
     query: str
-    payment_method: Optional[str] = "card"
+    payment_method: str | None = "card"
 
 
 class CheckoutResponse(BaseModel):
     success: bool
     message: str
-    order_id: Optional[str] = None
-    payment_id: Optional[str] = None
-    amount: Optional[int] = None
-    currency: Optional[str] = None
-    payment_link: Optional[str] = None
-    trace_id: Optional[str] = None
-    error: Optional[str] = None
+    order_id: str | None = None
+    payment_id: str | None = None
+    amount: int | None = None
+    currency: str | None = None
+    payment_link: str | None = None
+    trace_id: str | None = None
+    error: str | None = None
 
 
 @app.post("/checkout", response_model=CheckoutResponse)
@@ -121,7 +122,7 @@ async def checkout(request: CheckoutRequest):
 
 # ---- Multi-turn conversational chat ----
 
-from ..agent.session import ChatSession, AgentReply
+from ..agent.session import AgentReply, ChatSession
 
 # session_id -> (last_active, ChatSession)
 # Bounded to avoid an unbounded in-memory leak across repeated demo runs.
@@ -159,10 +160,10 @@ class PolicyOut(BaseModel):
     approved: bool
     requires_approval: bool
     over_budget: bool
-    reason: Optional[str] = None
-    remaining_budget: Optional[int] = None
+    reason: str | None = None
+    remaining_budget: int | None = None
     suggested_actions: list[str] = []
-    merchant_rule: Optional[str] = None
+    merchant_rule: str | None = None
     decisions: list[str] = []
 
 
@@ -172,21 +173,21 @@ class ChatOut(BaseModel):
     stage: str
     options: list[VariantOut] = []
     success: bool = False
-    order_id: Optional[str] = None
-    amount: Optional[int] = None
-    currency: Optional[str] = None
-    payment_link: Optional[str] = None
-    trace_id: Optional[str] = None
-    payment_status: Optional[str] = None
-    error: Optional[str] = None
-    product_name: Optional[str] = None
-    product_summary: Optional[str] = None
-    product_emoji: Optional[str] = None
-    policy: Optional[PolicyOut] = None
-    latency_ms: Optional[float] = None
-    upsell_item_id: Optional[str] = None
-    upsell_label: Optional[str] = None
-    upsell_price: Optional[int] = None
+    order_id: str | None = None
+    amount: int | None = None
+    currency: str | None = None
+    payment_link: str | None = None
+    trace_id: str | None = None
+    payment_status: str | None = None
+    error: str | None = None
+    product_name: str | None = None
+    product_summary: str | None = None
+    product_emoji: str | None = None
+    policy: PolicyOut | None = None
+    latency_ms: float | None = None
+    upsell_item_id: str | None = None
+    upsell_label: str | None = None
+    upsell_price: int | None = None
 
 
 def _to_out(session_id: str, r: AgentReply) -> ChatOut:
@@ -321,12 +322,12 @@ class CatalogItemOut(BaseModel):
     description: str
     price: int
     merchant_name: str
-    category: Optional[str] = None
-    emoji: Optional[str] = None
-    color: Optional[str] = None
-    storage: Optional[str] = None
-    size: Optional[str] = None
-    flavor: Optional[str] = None
+    category: str | None = None
+    emoji: str | None = None
+    color: str | None = None
+    storage: str | None = None
+    size: str | None = None
+    flavor: str | None = None
 
 
 def _to_catalog_item(p) -> CatalogItemOut:
@@ -354,8 +355,8 @@ async def browse_catalog():
     }
 
 
-@app.get("/catalog/search", response_model=List[CatalogItemOut])
-async def search_catalog(q: Optional[str] = None):
+@app.get("/catalog/search", response_model=list[CatalogItemOut])
+async def search_catalog(q: str | None = None):
     if not q:
         return [_to_catalog_item(p) for p in _catalog_service.list_all()]
     return [_to_catalog_item(p) for p in _catalog_service.search_products(q)]

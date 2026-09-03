@@ -1,20 +1,20 @@
-import uuid
 import re
-from enum import Enum
-from typing import List, Optional
+import time as _time
+import uuid
 from dataclasses import dataclass, field
+from enum import Enum
+from typing import Optional
 
+from ..config.settings import settings
+from ..config.tracing import tracer
 from ..models.schemas import CartItem, Intent, PaymentMethod, PaymentStatus
 from ..services.catalog import CatalogService
+from ..services.metrics import metrics_tracker
 from ..services.order import OrderService
 from ..services.payment import PaymentService
 from ..services.policy import PolicyEngine
-from ..services.metrics import metrics_tracker
 from ..services.razorpay import RazorpayClient, get_payment_mode, set_payment_mode
-from ..config.settings import settings
-from ..config.tracing import tracer
 from .intent_parser import IntentParser
-import time as _time
 
 
 class Stage(str, Enum):
@@ -38,34 +38,34 @@ class PolicyPayload:
     approved: bool
     requires_approval: bool
     over_budget: bool
-    reason: Optional[str] = None
-    remaining_budget: Optional[int] = None
-    suggested_actions: List[str] = field(default_factory=list)
-    merchant_rule: Optional[str] = None
-    decisions: List[str] = field(default_factory=list)
+    reason: str | None = None
+    remaining_budget: int | None = None
+    suggested_actions: list[str] = field(default_factory=list)
+    merchant_rule: str | None = None
+    decisions: list[str] = field(default_factory=list)
 
 
 @dataclass
 class AgentReply:
     text: str
     stage: Stage
-    options: List[VariantOption] = field(default_factory=list)
+    options: list[VariantOption] = field(default_factory=list)
     success: bool = False
-    order_id: Optional[str] = None
-    amount: Optional[int] = None
-    currency: Optional[str] = None
-    payment_link: Optional[str] = None
-    trace_id: Optional[str] = None
-    payment_status: Optional[str] = None
-    error: Optional[str] = None
-    product_name: Optional[str] = None
-    product_summary: Optional[str] = None
-    product_emoji: Optional[str] = None
-    policy: Optional[PolicyPayload] = None
-    latency_ms: Optional[float] = None
-    upsell_item_id: Optional[str] = None
-    upsell_label: Optional[str] = None
-    upsell_price: Optional[int] = None
+    order_id: str | None = None
+    amount: int | None = None
+    currency: str | None = None
+    payment_link: str | None = None
+    trace_id: str | None = None
+    payment_status: str | None = None
+    error: str | None = None
+    product_name: str | None = None
+    product_summary: str | None = None
+    product_emoji: str | None = None
+    policy: PolicyPayload | None = None
+    latency_ms: float | None = None
+    upsell_item_id: str | None = None
+    upsell_label: str | None = None
+    upsell_price: int | None = None
 
 
 class ChatSession:
@@ -75,16 +75,16 @@ class ChatSession:
       BROWSE -> SELECT -> CONFIRM -> EXECUTE -> DONE
     """
 
-    def __init__(self, session_id: Optional[str] = None):
+    def __init__(self, session_id: str | None = None):
         self.session_id = session_id or f"sess_{uuid.uuid4().hex[:12]}"
         self.stage = Stage.BROWSE
-        self.candidates: List = []          # Product objects (variants)
+        self.candidates: list = []          # Product objects (variants)
         self.selected: Optional = None      # chosen Product
-        self.intent: Optional[Intent] = None
+        self.intent: Intent | None = None
         self.payment_method: PaymentMethod = PaymentMethod.CARD
         self.retry_count: int = 0
-        self.trace_id: Optional[str] = None
-        self.final_reply: Optional[AgentReply] = None
+        self.trace_id: str | None = None
+        self.final_reply: AgentReply | None = None
 
         # wired services per-session so demo failure simulation is deterministic
         self.razorpay = RazorpayClient()
@@ -109,7 +109,7 @@ class ChatSession:
     def _rupees(self, paise: int) -> int:
         return paise // 100
 
-    def _variant_list(self, products: List) -> List[VariantOption]:
+    def _variant_list(self, products: list) -> list[VariantOption]:
         seen = set()
         out = []
         for p in products:
@@ -148,7 +148,7 @@ class ChatSession:
             detail += f" (by {merchant})"
         return detail
 
-    def _pick_from_message(self, message: str, candidates: List) -> Optional:
+    def _pick_from_message(self, message: str, candidates: list) -> Optional:
         msg = message.lower().strip()
 
         # try exact/near item-id or numeric index
@@ -220,8 +220,8 @@ class ChatSession:
             mode = set_payment_mode("simulate" if sim_on else "live")
             return AgentReply(
                 text=(
-                    f"Payments are now SIMULATED — I will NOT call the Razorpay API, "
-                    f"so the demo quota is safe. Say 'use razorpay' to go back live."
+                    "Payments are now SIMULATED — I will NOT call the Razorpay API, "
+                    "so the demo quota is safe. Say 'use razorpay' to go back live."
                     if mode == "simulate"
                     else "Payments are now LIVE — I will call the real Razorpay API."
                 ),
@@ -315,7 +315,7 @@ class ChatSession:
             trace_id=tid,
         )
 
-    def _pin_from_intent(self, products: List, intent: Intent) -> Optional:
+    def _pin_from_intent(self, products: list, intent: Intent) -> Optional:
         if intent.color:
             products = [p for p in products if p.color and intent.color.lower() in p.color.lower()]
         if intent.storage:

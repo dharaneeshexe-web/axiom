@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import List, Optional
+
 from ..models.schemas import Product
 
 
@@ -8,12 +8,12 @@ class CatalogService:
     def __init__(self):
         self.products = self._load_catalog()
 
-    def _load_catalog(self) -> List[Product]:
+    def _load_catalog(self) -> list[Product]:
         if products := self._load_from_json():
             return products
         return []
 
-    def _load_from_json(self) -> List[Product]:
+    def _load_from_json(self) -> list[Product]:
         candidates = [
             Path(__file__).resolve().parent.parent / "data" / "catalog.json",
             Path(__file__).resolve().parent.parent.parent / "catalog.json",
@@ -28,9 +28,9 @@ class CatalogService:
 
     def search_products(
         self,
-        query: Optional[str] = None,
-        merchant_id: Optional[str] = None,
-    ) -> List[Product]:
+        query: str | None = None,
+        merchant_id: str | None = None,
+    ) -> list[Product]:
         results = self.products
 
         if merchant_id:
@@ -73,13 +73,13 @@ class CatalogService:
 
         return results
 
-    def get_product(self, item_id: str) -> Optional[Product]:
+    def get_product(self, item_id: str) -> Product | None:
         for product in self.products:
             if product.item_id == item_id:
                 return product
         return None
 
-    def list_all(self) -> List[Product]:
+    def list_all(self) -> list[Product]:
         return list(self.products)
 
     def by_category(self) -> dict:
