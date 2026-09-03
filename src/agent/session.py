@@ -381,6 +381,7 @@ class ChatSession:
             if needs_approval and not self.approval_granted:
                 tracer.end_span(tid, sid, output={"confirmed": True, "awaiting_approval": True})
                 self.pending_policy = True
+                policy = self._evaluate_policy(tid, self.selected, self._current_price())
                 return AgentReply(
                     text=(
                         f"This purchase of \u20b9{self._rupees(self._current_price()):,} is above your "
@@ -393,6 +394,7 @@ class ChatSession:
                     product_name=self.selected.name,
                     product_summary=self._describe(self.selected),
                     product_emoji=self.selected.emoji,
+                    policy=self._policy_payload(policy),
                 )
             tracer.end_span(tid, sid, output={"confirmed": True, "product": self.selected.name})
             self.stage = Stage.EXECUTE
@@ -403,11 +405,13 @@ class ChatSession:
                 trace_id=tid,
             )
         # Ambiguous -> could be a re-spec or a different product
+        policy = self._evaluate_policy(tid, self.selected, self._current_price())
         return AgentReply(
             text=f"Just to confirm — you want {self._describe(self.selected)}? Reply yes to place the order, or tell me to change anything.",
             stage=Stage.CONFIRM,
             success=True,
             trace_id=tid,
+            policy=self._policy_payload(policy),
         )
 
     # ---- execution ----

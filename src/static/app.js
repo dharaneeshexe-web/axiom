@@ -1,4 +1,4 @@
-/* GrokCheckout — client */
+/* Axiom — client */
 (function () {
   "use strict";
 
@@ -22,6 +22,11 @@
   const catLoading = $("#catLoading");
   const metricsGrid = $("#metricsGrid");
   const metricsRefresh = $("#metricsRefresh");
+  const modeToggle = $("#modeToggle");
+  const modeLabel = $("#modeLabel");
+  const modeSub = $("#modeSub");
+  const liveDot = $("#liveDot");
+  const liveLabel = $("#liveLabel");
 
   let sessionId = null;
   let busy = false;
@@ -400,7 +405,13 @@
       renderSku(data);
       renderPay(null);
       renderPolicy(data);
-      if (!(data.policy && data.policy.requires_approval)) {
+      // Only auto-confirm low-risk orders. Block auto-confirm when the reply signals
+      // approval is required OR the policy payload says so — otherwise "yes" would bounce
+      // off the approval gate forever (the infinite user_confirmation loop).
+      const requiresHumanApproval =
+        (data.policy && data.policy.requires_approval) ||
+        /approve|approval needed|approval required|above your auto-approval/i.test(data.message || "");
+      if (!requiresHumanApproval) {
         scheduleAutoConfirm();
       }
       return;
@@ -504,6 +515,57 @@
 
   metricsRefresh.addEventListener("click", refreshMetrics);
   refreshMetrics();
+
+  /* ---- Payment mode (LIVE / SIMULATE) toggle ---- */
+  function applyModeUI(mode) {
+    const live = mode === "live";
+    modeToggle.classList.toggle("off", !live);
+    modeToggle.setAttribute("aria-checked", live ? "true" : "false");
+    modeLabel.textContent = live ? "LIVE" : "SIMULATE";
+    modeSub.textContent = live ? "Razorpay API" : "No API calls";
+    liveDot.classList.toggle("off", !live);
+    liveLabel.textContent = live ? "Live · Razorpay Test Mode" : "Simulate · no API calls";
+  }
+
+  async function refreshPaymentMode() {
+    try {
+      const r = await fetch("/payment-mode");
+      if (r.ok) {
+        const d = await r.json();
+        applyModeUI(d.mode);
+      }
+    } catch (e) {
+      /* keep current UI on network hiccup */
+    }
+  }
+
+  async function togglePaymentMode() {
+    const want = modeToggle.classList.contains("off") ? "live" : "simulate";
+    modeToggle.style.opacity = "0.6";
+    try {
+      const r = await fetch("/payment-mode", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: want })
+      });
+      if (r.ok) {
+        const d = await r.json();
+        applyModeUI(d.mode);
+        addMetaNote(
+          d.mode === "simulate"
+            ? "Payments switched to SIMULATE — Razorpay API will not be called."
+            : "Payments switched to LIVE — real Razorpay API calls."
+        );
+      }
+    } catch (e) {
+      addMetaNote("Could not switch payment mode", true);
+    } finally {
+      modeToggle.style.opacity = "1";
+    }
+  }
+
+  modeToggle.addEventListener("click", togglePaymentMode);
+  refreshPaymentMode();
 
   function renderCatalog(groups) {
     catGroups.innerHTML = "";

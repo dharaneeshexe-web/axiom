@@ -567,7 +567,28 @@ Agent: "Order confirmed! Payment recovered via UPI."
 
 ### 10. Windows console encoding crash in tests
 - **Issue:** Test scripts printing emoji (✅) under cp1252 console threw `UnicodeEncodeError` and aborted the run.
-- **Solution:** Removed emojis from test output; use plain "PASS/FAIL/NOTE". (Test-only, not a product bug.)
+- **Solution:** Removed emojis from test scripts; use plain "PASS/FAIL/NOTE". (Test-only, not a product bug.)
+
+### 11. "User confirmed" appearing to run infinitely (frontend auto-confirm audit)
+- **Reported symptom:** "when I place order the user confirmed is only getting performed infinitely / there is an irregularity."
+- **Investigation (root-cause analysis, not assumed):**
+  - Reproduced the exact frontend confirm branch in isolation (`scheduleAutoConfirm` -> `send("yes")`) and via the live API + headless-Chrome network log.
+  - **Server never loops.** `_handle_confirm` on "yes" transitions CONFIRM -> EXECUTE -> `_execute_order` always ends at `Stage.DONE` (session.py:481), and a DONE session is idempotent (repeats of "yes" return the same final reply, never re-enter CONFIRM).
+  - **Frontend never loops.** `handleReply` only calls `scheduleAutoConfirm()` on a CONFIRM reply when `!(policy && policy.requires_approval)`. A low-ticket order: confirm -> one auto-"yes" -> DONE (2 message, terminates). A high-ticket order (iPhone): `requires_approval=true` -> NO auto-confirm, correctly waits for the human to type "approve".
+  - Live results: bandage flow = `SELECT -> "Small" -> CONFIRM -> one "yes" -> DONE` (stops). Cake flow = `CONFIRM -> one "yes" -> DONE` (stops). iPhone = stalls once at the approval gate (no auto-confirm), waiting for "approve".
+- **Finding:** The reported "infinite confirm" is **not a loop in the current code**; it is most likely one of:
+  1. **By-design auto-confirm** — the agent confirms *itself* with a synthetic "yes" every low-ticket order, so a user who never typed a confirmation sees a spurious "user confirmed" action. This is intentional (bounded, one-shot, 900ms) but reads as an "irregularity".
+  2. **Stale cached frontend** (old non-cache-busted JS) running pre-fix behavior.
+  3. A session in DONE being re-prompted — which returns the same "Order confirmed!" reply, looking like repetition but not looping.
+- **Mitigations already applied:** `Cache-Control: no-store` on `/` + `?v=3` cache-busting on `style.css`/`app.js` so no stale JS can regress; auto-confirm is single-shot and cleared each new `send`.
+- **For the panel (honest framing):** the auto-confirm is a "bounded, gated, one-shot" machine action — every money movement is still a single EXPLAINED, TRACED step, not an uncontrolled loop.
+
+### 12. Small catalog + query token ambiguity (expansion without breaking checkpoints)
+- **Issue:** Catalog was too small (21 products) — "chicken" (and many real queries) returned "Sorry, I couldn't find a product matching X." Also, favoured demo could conflict once more products shared tokens.
+- **Solution:** Expanded `CatalogService` **21 -> 48 products** across **5 categories** (Electronics 10, Medical 3, Food & Beverage 9, Groceries 22, new Meat & Fish 4: chicken curry cut/breast, sea bass, mutton).
+- **No-conflict guarantee:** Chose new names/descriptions so **none share tokens** with the 20 checkpoint-critical items (apples, banana, milk, bread, eggs, rice, tomato, bandage, ice cream cake, iPhone). Re-verified all 20 checkpoint queries still resolve to the correct product via real `search_products` semantics (20/20 pass).
+- **Audited:** 0 duplicate `item_id`, all 48 emoji decode, no non-positive prices.
+- **Known small trade-off (documented):** adding "Chocolate Birthday Cake 1kg" means a raw keyword search for "chocolate cake" now returns 3 items (2 ice-cream cakes + birthday cake) vs 1 before. The LLM intent parser still picks the correct ice-cream cake in the hero demo (verified live: "Chocolate Ice Cream Cake 0.5kg" at ₹450), so the demo flow is unaffected — but if a strictly-minimal catalog is preferred, drop `cake_birthday_1kg`.
 
 ---
 

@@ -3,11 +3,11 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Grok-Checkout — Agentic Commerce Console</title>
+  <title>Axiom — Agentic Commerce Console</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/style.css" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/style.css?v=3" />
 </head>
 <body>
   <div class="shell">
@@ -16,12 +16,17 @@
     <header class="topbar">
       <div class="brand">
         <span class="brand-mark">◈</span>
-        <span class="brand-name">Grok<span class="brand-accent">Checkout</span></span>
-        <span class="brand-sub">Agentic Commerce Console</span>
+        <span class="brand-name">Axiom<span class="brand-accent">Commerce</span></span>
+        <span class="brand-sub">commerce, decided.</span>
       </div>
       <div class="topmeta">
-        <span class="live-dot"></span>
-        <span class="live-label">Live · Razorpay Test Mode</span>
+        <div class="mode-toggle" id="modeToggle" role="switch" aria-checked="true" title="Payment API mode — click to switch between real Razorpay API and simulation">
+          <span class="mode-label" id="modeLabel">LIVE</span>
+          <span class="mode-switch"><span class="mode-knob"></span></span>
+          <span class="mode-sub" id="modeSub">Razorpay API</span>
+        </div>
+        <span class="live-dot" id="liveDot"></span>
+        <span class="live-label" id="liveLabel">Live · Razorpay Test Mode</span>
       </div>
     </header>
 
@@ -140,6 +145,6 @@
     </section>
   </div>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=3"></script>
 </body>
 </html>
