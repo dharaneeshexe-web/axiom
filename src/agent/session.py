@@ -237,6 +237,31 @@ class ChatSession:
                 success=True,
                 trace_id=tid,
             )
+        # Runtime failure-mode toggle: set what happens when a payment is attempted.
+        fail_on = any(p in cmd for p in [
+            "card declined", "decline my card", "simulate decline",
+            "failure recovery", "simulate failure", "test failure",
+        ])
+        fail_off = any(p in cmd for p in [
+            "clear failure", "remove failure", "no failure",
+            "normal payment", "success payment", "payment success",
+        ])
+        if fail_on:
+            self.payment_service.demo_failure = "card_declined"
+            return AgentReply(
+                text="Failure mode ON — next payment will be declined, then I'll auto-retry with UPI. Place an order to see it.",
+                stage=self.stage,
+                success=True,
+                trace_id=tid,
+            )
+        if fail_off:
+            self.payment_service.demo_failure = "none"
+            return AgentReply(
+                text="Failure mode OFF — payments will succeed normally.",
+                stage=self.stage,
+                success=True,
+                trace_id=tid,
+            )
 
         if self.stage == Stage.DONE:
             # Session complete — any new message starts a fresh order.

@@ -56,3 +56,16 @@ Thumbs.db
 .ruff_cache/
 .agents/
 .claude/
+
+# ---- buildathon scratch (not the product) ----
+arch*.txt
+architecture*.txt
+COMPETITIVE_ANALYSIS*
+FRONTEND_HANDOFF*
+make_pitch_pdf*
+axion_pitch_script*
+cp[0-9]_*.py
+test_link.py
+verify_*.py
+dist_check/
+PITCH_GUIDE.md

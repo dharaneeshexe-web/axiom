@@ -31,7 +31,7 @@ The server serves a live cockpit at `/`:
         ▼            ▼             ▼             ▼
    Stateful    Intent       Catalog      Laminar
    ChatSession  Parser       Service      Tracer
-   (BROWSE→     (Groq,       (21 products, (agent-native
+   (BROWSE→     (Groq,       (48 products, (agent-native
     SELECT→      qwen3.8-    grouped)      audit trail)
     CONFIRM→    27b)
     EXECUTE→
@@ -156,7 +156,7 @@ src/
 │   └── workflow.py        # Legacy LangGraph agent
 ├── services/
 │   ├── razorpay.py        # Razorpay client (retry/backoff, error mapping)
-│   ├── catalog.py         # 21 products, 4 categories
+│   ├── catalog.py         # 48 products, 5 categories
 │   ├── order.py           # Order management
 │   └── payment.py         # Payment processing
 ├── models/schemas.py      # Pydantic models
@@ -172,7 +172,7 @@ Razorpay test mode caps `payment_links` at **30/day**. Once reached, the money s
 
 ## Pitch script
 
-> The 5-minute buildathon pitch. Also available as a printable PDF — `axion_pitch_script.pdf` (see `make_pitch_pdf.py` to regenerate).
+> The 5-minute buildathon pitch.
 
 **0. INTRO & HOOK (0:00–0:30)**
 > "Hi, I'm Dharaneesh. I built an agent that makes a merchant genuinely transactable by an AI buyer — end to end. Most agent-checkout demos work only when everything goes right. Mine fails on purpose, so you can watch it recover. It's called Axiom — commerce, decided."
