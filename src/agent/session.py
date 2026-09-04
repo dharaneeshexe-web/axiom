@@ -239,12 +239,26 @@ class ChatSession:
             )
 
         if self.stage == Stage.DONE:
-            return self.final_reply or AgentReply(
-                text="This session is complete. Start a new session to order again.",
-                stage=Stage.DONE,
-                success=True,
-                trace_id=tid,
+            # Session complete — any new message starts a fresh order.
+            self.stage = Stage.BROWSE
+            self.selected = None
+            self.candidates = []
+            self.intent = None
+            self.payment_method = PaymentMethod.CARD
+            self.retry_count = 0
+            self.final_reply = None
+            self.upsell = None
+            self.pending_policy = None
+            self.approval_granted = False
+            self.policy = PolicyEngine(
+                preferred_payment=self.preferred_payment,
+                monthly_budget=settings.monthly_budget_paise,
+                approval_threshold=settings.approval_threshold_paise,
             )
+            self.turn_started = _time.perf_counter()
+            # Immediately process the new message through BROWSE so the user
+            # doesn't have to type twice after a completed order.
+            return await self._handle_browse(message, tid)
 
         if self.stage == Stage.BROWSE:
             reply = await self._handle_browse(message, tid)

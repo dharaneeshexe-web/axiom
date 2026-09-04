@@ -779,3 +779,170 @@ visualization + Merchant Health + policy panel are the frontend pieces already s
 All P1/P2/P4 work is uncommitted on `master`. Diff: src/agent/session.py, src/api/endpoints.py,
 src/config/tracing.py, src/config/settings.py, src/services/razorpay.py, src/static/{app.js,
 index.html, style.css}; new src/services/{policy.py, metrics.py}.
+
+---
+
+## Webhook-Driven Payment-Failure Recovery (DONE, committed 654c6f9)
+
+The Track-1 bar requires "explainable, bounded, and gated" money actions with graceful failure
+handling. The deterministic `DEMO_FAILURE=card_declined` sim covers the offline demo, but the
+real production path needs Razorpay to *tell* the agent when a payment failed — via webhooks.
+
+### What was built
+
+| File | What |
+|------|------|
+| `src/services/webhook_store.py` | Thread-safe singleton `webhook_store` — maps payment-link-id / order-id → `WebhookRecord` (order, currency, amount, item, retry count). TTL-pruned. `recent_recoveries()` surfaces recent UPI recovery links. |
+| `src/services/webhook_recovery.py` | HMAC-SHA256 `verify_signature()`. `WebhookRecoveryHandler` classifies failure codes → only RETRYABLE/transient (incl. `BAD_REQUEST_CARD_DECLINED`) get a bounded UPI recovery link. Fraud/risk causes are never retried (defence-only, Track-1 bar). Per-order max-retry bound enforced. |
+| `src/services/payment.py` | Live-mode money path registers every real payment link into `webhook_store` (try/except — registration can never break the money path). |
+| `src/api/endpoints.py` | `POST /webhooks/razorpay` — verifies signature (when `WEBHOOK_SECRET` set), runs handler, records recovery in `metrics_tracker` (`"recovered"`, `recovered_from=<code>`). `/metrics` now exposes `recent_recoveries`. |
+| `src/config/settings.py` | New `webhook_secret` field (`WEBHOOK_SECRET` env var, empty = accept unverified, non-empty = HMAC-verified). |
+| `src/static/app.js` + `style.css` | `/metrics` renders "Webhook recoveries" rows with UPI pay links (`.recovery-row`, `.recovery-link`). |
+| `tests/test_webhook.py` | 6 hermetic tests via `StubClient` — no real API calls. Covers: signature verify, declined→UPI recovery, fraud-not-retried, unknown-order refusals, max-retries honored, endpoint rejects bad signature. |
+
+### What broke (and how I got out)
+
+#### 1. `.dockerignore` silently excluded `src/data/catalog.json`
+**Symptom:** Container booted, `/catalog` returned empty. Zero errors. The `data/` rule in
+`.dockerignore` matched `src/data/` and Docker never saw the catalog file at build time.
+
+**Root cause:** `data/` in `.dockerignore` is a blanket prefix match — it excluded the entire
+`src/data/` directory without any warning. Docker builds silently ignore excluded paths.
+
+**Fix:** Added `!src/data/` exception to `.dockerignore` BEFORE the `data/` rule. Also added
+`COPY catalog.json ./` to `Dockerfile` as a belt-and-suspenders fallback. Verified in-container:
+`/catalog` returns 48 products across 5 categories.
+
+#### 2. `webhook_store` module-vs-instance import bug (crash at startup)
+**Symptom:** `ModuleNotFoundError: cannot import name 'webhook_store' from 'src.services.webhook_store'` — the app refused to boot in-container and in tests.
+
+**Root cause:** `webhook_recovery.py` had `from . import webhook_store` — this imports the
+**module** (a `ModuleType` object), NOT the `webhook_store` singleton instance defined inside it.
+Every subsequent call like `webhook_store.by_payment_link()` failed because modules don't have
+those methods.
+
+**Fix:** Changed to `from .webhook_store import webhook_store` (the singleton instance).
+Verified: 15/15 tests pass, container boots clean.
+
+#### 3. `_NON_RETRYABLE` classification bug (fraud codes retried, card declines blocked)
+**Symptom:** Real Razorpay decline codes like `BAD_REQUEST_CARD_DECLINED` were classified as
+non-retryable because `_NON_RETRYABLE` contained `"bad_request_"` as a prefix. Meanwhile actual
+fraud codes (`fraud_`, `risk_`) were correctly blocked — but the useful card declines were
+wrongly blocked too.
+
+**Root cause:** The `_NON_RETRYABLE` set used `bad_request_` as a substring check, which is too
+broad. `BAD_REQUEST_CARD_DECLINED` is a real decline that SHOULD be retried with UPI. Only
+genuine fraud/risk markers should block retry.
+
+**Fix:** Removed `bad_request_` from `_NON_RETRYABLE`. Now only `fraud_`, `risk_`, `revoked_`,
+`closed_`, `blocked_` block retry. Card declines (including `BAD_REQUEST_CARD_DECLINED`) correctly
+trigger recovery.
+
+#### 4. `import json` / B904 lint error in endpoints.py webhook route
+**Symptom:** Ruff flagged `raise HTTPException(...) from None` as B904 (exception should use
+`raise ... from err`) and `json` was imported inline inside the function.
+
+**Root cause:** The `json.loads(raw.decode("utf-8"))` try/except raised without chaining, and
+`import json` was inside the function body (not at module top).
+
+**Fix:** Added `import json` at module top of `endpoints.py`. Changed to `raise ...
+from None` with `json` moved to module scope. Ruff clean.
+
+#### 5. PowerShell/curl quoting mangling the signed webhook test
+**Symptom:** In-container signed webhook test returned 400 ("invalid webhook signature")
+despite the same signed payload working perfectly via Python's httpx client. Spent ~30 tool
+calls debugging what turned out to be a test-harness issue, not a product bug.
+
+**Root cause:** PowerShell's handling of JSON bodies with escaped double quotes via `curl.exe
+-d "$body"` is unreliable — curl receives a mangled body, so the HMAC (computed over clean
+bytes in Python) doesn't match what curl actually transmitted.
+
+**Fix:** Wrote a Python script (`wh_signed_check.py`) that POSTs with `httpx` directly (same
+process computes HMAC and sends the body). Result: 200 `{"verified": true}` — confirmed the
+product is correct. The lesson: on Windows, never trust curl with JSON bodies from PowerShell;
+use Python httpx or write the body to a file and use `--data-binary @file`.
+
+### Verification summary
+
+| Check | Result |
+|-------|--------|
+| Local pytest (9 core + 6 webhook) | **15/15 pass** |
+| Ruff on new webhook files | **All checks passed** |
+| Container `/health` | `{"status":"healthy"}` |
+| Container `/metrics` | `recoveries` key present |
+| Container unsigned webhook → 400 | `{"detail":"invalid webhook signature"}` |
+| Container signed webhook → 200 | `{"verified": true, "action": "ignored"}` (no matching recovery = correct) |
+| Container `/catalog` | 48 products, 5 categories |
+
+### How to demo the real recovery path
+
+1. Start the container: `docker run -p 8099:8000 --env-file .env razorpay-checkout-agent:latest`
+2. Start ngrok: `ngrok http 8099` — copy the public URL
+3. In Razorpay dashboard → Settings → Webhooks → set URL to `{ngrok}/webhooks/razorpay`
+4. Set `WEBHOOK_SECRET` in `.env` to match the dashboard secret
+5. Buy iPhone 16 → order + payment link created → user pays with declined card (`4000 0000 0000 0002`)
+6. Razorpay fires `payment.failed` webhook → agent receives it → creates UPI recovery link for the SAME order
+7. User pays via UPI → `payment.paid` webhook → order recovered
+8. Frontend `/metrics` shows "Webhook recoveries" with UPI pay link
+
+**Note:** Webhook recovery is inherently live-mode only (simulate mode fires no real webhooks).
+The deterministic `DEMO_FAILURE=card_declined` sim remains available as the offline fallback.
+Real webhooks consume the daily `payment_links` cap (30/day per test account).
+
+---
+
+## Multiple OpenCode Sessions (Conflict Avoidance)
+
+**Can you run multiple opencode windows on the same repo simultaneously?** Technically yes, but
+with important caveats:
+
+### What works
+- **Different files:** Session A editing `src/services/*`, Session B editing `src/static/*` — no
+  conflict as long as they never touch the same file.
+- **Different branches:** Each session on its own git branch, merged later — cleanest approach.
+
+### What breaks
+- **Same file, same time:** Two sessions editing `endpoints.py` simultaneously will silently
+  overwrite each other's changes. There is NO conflict detection or file locking in opencode.
+- **Same git commit:** Both sessions can `git add` the same file; second commit will either
+  fail (if staged files changed) or silently overwrite.
+
+### Recommended safe pattern for parallel sessions
+```
+Session A (backend):  src/services/*, src/agent/*, src/api/*
+Session B (frontend): src/static/*, tests/*
+Session C (docs):     CONTEXT.md, README.md
+```
+Never share files across sessions. Commit frequently. Pull before starting a new session.
+If in doubt: serialize (finish one session, then start the next).
+
+---
+
+## DONE→BROWSE Reset Fix (Bug #13)
+
+**Reported symptom:** After placing an order, typing anything (even "iphone" or "yes")
+returned the same order confirmation. The session was stuck at `Stage.DONE` forever —
+the agent just replayed `self.final_reply` on every input.
+
+**Root cause:** `session.py:241-247` had a hard return when `stage == DONE`:
+```python
+if self.stage == Stage.DONE:
+    return self.final_reply  # same reply every time, forever
+```
+
+**Fix:** Any new message after DONE now resets all session state (selected, candidates,
+intent, payment method, upsell, policy, approval flag) and immediately processes the
+message through `_handle_browse` — so the user doesn't have to type twice.
+
+**Scenarios verified:**
+| Input after DONE | Before fix | After fix |
+|-----------------|-----------|----------|
+| "iphone" | Same old order confirmation (stuck) | Shows iPhone variants (fresh browse) |
+| "yes" | Same old order confirmation (stuck) | "Sorry, couldn't find 'yes'" (browse) |
+| "iphonr" (typo) | Same old order confirmation (stuck) | "Sorry, couldn't find 'iphonr'" (browse) |
+| "simulate mode" | Same old order confirmation (stuck) | Works (control command checked first) |
+| Rapid "yes" ×5 | Same reply 5× (infinite loop risk) | Browse → no match each time (no loop) |
+
+**Test updated:** `test_no_loop_after_done_repeated_yes_stays_done` replaced with
+`test_done_resets_to_browse_on_new_message` — verifies DONE→BROWSE reset, fresh
+"iphone" browse, and "iphonr" typo handling. 15/15 pass.

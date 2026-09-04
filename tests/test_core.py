@@ -45,17 +45,31 @@ async def test_high_ticket_requires_explicit_approval_not_yes():
     assert r3.success is True
 
 
-async def test_no_loop_after_done_repeated_yes_stays_done():
-    """Regression for the infinite user_confirmation loop."""
+async def test_done_resets_to_browse_on_new_message():
+    """After a completed order, any new message resets to BROWSE for a fresh order."""
     s = _session()
     await s.process("Order a chocolate ice cream cake")   # -> CONFIRM
     r = await s.process("yes")                             # -> DONE
     assert r.stage == Stage.DONE
-    # repeated confirmations after DONE must NOT re-enter CONFIRM / loop
-    for _ in range(5):
-        r = await s.process("yes")
-        assert r.stage == Stage.DONE
-    assert s.stage == Stage.DONE
+
+    # "yes" after DONE -> resets to BROWSE (no loop back to CONFIRM)
+    r2 = await s.process("yes")
+    assert r2.stage == Stage.BROWSE
+    assert s.stage == Stage.BROWSE
+
+    # "iphone" after DONE -> fresh browse, parses and finds product
+    r3 = await s.process("iphone")
+    assert r3.stage in (Stage.SELECT, Stage.CONFIRM)
+    assert r3.success is True
+
+    # "iphonr" (typo) after DONE -> resets + immediately processes -> no match
+    s2 = _session()
+    await s2.process("Order a chocolate ice cream cake")
+    await s2.process("yes")
+    r4 = await s2.process("iphonr")
+    assert r4.stage == Stage.BROWSE
+    assert r4.success is False
+    assert "couldn't find" in r4.text.lower()
 
 
 async def test_card_declined_recovers_via_upi():
