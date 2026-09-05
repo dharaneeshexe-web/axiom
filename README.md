@@ -170,44 +170,6 @@ src/
 
 Razorpay test mode caps `payment_links` at **30/day**. Once reached, the money step returns `429 RATE_LIMIT_EXCEEDED`. Axiom handles this gracefully and fast — it surfaces the real reason and exits cleanly instead of hanging. The limit resets daily. The failure-recovery demo (`DEMO_FAILURE=card_declined`) is simulated and not rate-limited, so it always shows a clean success path.
 
-## Pitch script
-
-> The 5-minute buildathon pitch.
-
-**0. INTRO & HOOK (0:00–0:30)**
-> "Hi, I'm Dharaneesh. I built an agent that makes a merchant genuinely transactable by an AI buyer — end to end. Most agent-checkout demos work only when everything goes right. Mine fails on purpose, so you can watch it recover. It's called Axiom — commerce, decided."
->
-> *Optional, why now:* "Agent-to-agent commerce is the open problem of the year — NPCI's UAP in development, Google's AP2 and Coinbase's x402 live. The infrastructure is arriving; what's missing is agents that can safely finish a purchase. That's what I built."
-
-**1. LIVE DEMO — HAPPY PATH · iPhone 16 (0:30–1:40)**
-> "Here's the live agent — I'll just speak to it. Axiom, order an iPhone 16, show me the options." *(6 variants, with prices)* "Blue, 256 gig." *(pins variant, shows price — no money moves yet)* "Yes."
->
-> "Watch the right side — the Agent Decision Trace. Intent parsed, catalog searched, product pinned, order created, payment issued. This is Laminar. Every money action is explainable, bounded, and gated — you can see exactly why the agent acted. There's an open-in-Laminar link for the full transcript. And here's the payment link — bounded, payable, authorized. That's the money action, gated behind confirmation."
-
-**2. THE DIFFERENTIATOR — FAILURE RECOVERY (1:40–2:30)**
-> "Every other checkout agent I've seen blocks when payment fails. Watch mine. Axiom, buy me a crepe bandage." *(small → yes → CARD DECLINED)*
->
-> "The card was declined. Instead of a dead end, the agent says so, then retries with UPI — it recovered the sale. That's a payment you'd have lost. That's the difference between an agent that works when it works, and one you can trust with real revenue."
->
-> *Optional:* "I simulate the decline deterministically so you see it every time — same result, no flakiness."
-
-**3. ARCHITECTURE (2:30–3:30)**
-> "Under the hood it's a stateful multi-turn session — a stage machine: BROWSE → SELECT → CONFIRM → EXECUTE → DONE. Three layers: **AI** — intent parsing; Groq turns 'crepe bandage for my sprain' into structured JSON. **Deterministic logic** — where I chose *not* to use AI: product selection and pricing resolve against the real catalog, never the model, so it can't hallucinate an SKU or price. **Trust & money** — Razorpay test mode for orders and payment links, Laminar for the audit trail. Failed money actions are logged as error spans — honest, not hidden."
-
-**4. STRENGTHS & HONEST LIMITS (3:30–4:15)**
-> "It runs — Dockerized, health-checked, verified end-to-end. It recovers from its own infrastructure: Razorpay's test mode throttles payment links at 30 a day; when I hit that it used to hang a minute then crash, now it fails fast with the real error code. And it's honest about that cap — it's real, resets daily, and I say so. The failure-recovery demo is simulated so it always shows a clean path without burning the quota."
-
-**5. CLOSING & VISION (4:15–4:45)**
-> "I built Axiom for today — real payments, a real audit trail — and I built it aware of tomorrow. The protocols are racing: NPCI's UAP, Google's AP2, Coinbase's x402. An agent that can finish a bounded, authorized purchase is exactly what they'll need. Every money action explainable, bounded, and gated. One failure handled gracefully — actually four, and one recovered revenue. That's the bar, and Axiom clears it. I'm Dharaneesh. Thank you."
-
-**Delivery & demo notes**
-- Do NOT read the script — learn the beats, let the live dashboard prompt you.
-- Never cut the failure-recovery moment; it's the pitch.
-- Use the rubric words: *money action, bounded, gated, audit trail*.
-- Scenario runbook: **iPhone** (order → Blue/256 → confirm → yes → link + trace) · **Bandage** (order → small → yes → declined → UPI → success) · **Cake** (bonus, chocolate → yes).
-- Don't burn real payment links rehearsing the same day (30/day cap); use the simulated failure path for slides.
-- Record 3–5 clean runs; keep a backup even if one stumbles.
-
 ## License
 
 MIT
